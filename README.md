@@ -44,7 +44,6 @@ Most scripts require `SmartJumper_Lib.lsp` to be loaded first:
 | `AUTOPOWERBUS` | AutoPowerBus.lsp | Automatic power bus wiring |
 | `DATALINE` | DataLineBus.lsp | DALI/DMX data bus wiring |
 | `AUTOINPUT` | AutoInputDevice.lsp | Input device placement and wiring |
-| `AUTOLAYOUT` | AutoLayout.lsp | Generate paper space layouts from frames |
 | `SMARTMLINE` | SmartMultiJumper.lsp | Draw parallel lines with auto-bridges |
 
 ---
