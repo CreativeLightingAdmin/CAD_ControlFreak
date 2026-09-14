@@ -12,6 +12,7 @@ The `Control Freak Product Blocks 2025.dwg` file contains schematic blocks for:
 | eDIDIO S10 6 Pole | Yes | 6-pole lighting controller |
 | UBi | Yes | Universal bus interface |
 | UBi Power | Yes | Powered universal bus interface |
+| DALI 0-10V V2 | Yes | DALI to 0-10V converter |
 | DALI 0-10V | Yes | DALI to 0-10V converter |
 | DMX Splitter | Yes | DMX signal splitter |
 | LIDA D | Yes | DALI driver |
