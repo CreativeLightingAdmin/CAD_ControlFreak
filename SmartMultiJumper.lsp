@@ -41,12 +41,14 @@
   ; ---------------------------------------------------------
   (setq startPt (getpoint "\nClick Start Point: "))
   (if (not startPt) (exit))
-  ; Flatten Start Point to Z=0 immediately
-  (setq startPt (list (car startPt) (cadr startPt) 0.0))
 
   (setq endPt (getpoint startPt "\nClick End Point: "))
   (if (not endPt) (exit))
-  ; Flatten End Point to Z=0
+
+  ; Picked points are in the current UCS - convert to WCS and flatten to Z=0
+  (setq startPt (trans startPt 1 0))
+  (setq startPt (list (car startPt) (cadr startPt) 0.0))
+  (setq endPt (trans endPt 1 0))
   (setq endPt (list (car endPt) (cadr endPt) 0.0))
 
   ; 3. CALCULATION SETUP

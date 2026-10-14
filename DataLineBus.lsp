@@ -7,11 +7,11 @@
 (vl-load-com)
 
 (defun c:dataline ( / *error* protocol refPt refHeight dataPlusBusY dataMinusBusY
-                      shieldBusY ColPlus ColMinus ColShield
+                      shieldBusY ColPlus ColMinus ColShield BrRad DotRad
                       dataPlusList dataMinusList shieldList p1 ss blk deviceLine
                       daPlusAttr daMinusAttr daShieldAttr daPlusPos daMinusPos daShieldPos
-                      oldSnap oldCmd deviceCount i x y ptStart ptTop len
-                      startX endX dataMinusX shieldX)
+                      deviceCount plusDots minusDots shieldDots
+                      deviceBlocks routes plusRoutes minusRoutes shieldRoutes i)
 
   ; --- CHECK DEPENDENCY ---
   (if (not smart-wire)
@@ -27,8 +27,6 @@
 
   ; --- ERROR HANDLER ---
   (defun *error* (msg)
-    (if oldSnap (setvar "OSMODE" oldSnap))
-    (if oldCmd (setvar "CMDECHO" oldCmd))
     (if (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*"))
       (princ (strcat "\nError: " msg))
     )
@@ -44,7 +42,7 @@
   (princ "\nY Offset (i.e. Negative Wire) - Adds 5mm...")
   (setq refPt (getpoint))
   (if (not refPt) (exit))
-  (setq refHeight (cadr refPt))  ; Extract Y coordinate
+  (setq refHeight (cadr (trans refPt 1 0)))  ; Y in WCS (picked point is in UCS)
 
   (princ (strcat "\nReference height: " (rtos refHeight 2 2) " mm"))
 
@@ -75,6 +73,8 @@
   )
 
   ; 4. COLLECT DEVICES AND TERMINALS (PER-DEVICE LINE SELECTION)
+  ; Click order does not matter - bus spans and junction dots are
+  ; worked out from terminal positions when drawing
   (setq dataPlusList '())
   (setq dataMinusList '())
   (setq shieldList '())
@@ -116,6 +116,7 @@
               (setq dataPlusList (append dataPlusList (list daPlusPos)))
               (setq dataMinusList (append dataMinusList (list daMinusPos)))
               (setq shieldList (append shieldList (list daShieldPos)))
+              (setq deviceBlocks (append deviceBlocks (list blk)))
               (setq deviceCount (1+ deviceCount))
               (princ (strcat "\n  Found " daPlusAttr ", " daMinusAttr ", " daShieldAttr))
             )
@@ -126,6 +127,7 @@
             (progn
               (setq dataPlusList (append dataPlusList (list daPlusPos)))
               (setq dataMinusList (append dataMinusList (list daMinusPos)))
+              (setq deviceBlocks (append deviceBlocks (list blk)))
               (setq deviceCount (1+ deviceCount))
               (princ (strcat "\n  Found " daPlusAttr " and " daMinusAttr))
             )
@@ -149,82 +151,42 @@
     )
   )
 
-  ; 4. SETUP ENVIRONMENT
-  (setq oldSnap (getvar "OSMODE"))
-  (setq oldCmd (getvar "CMDECHO"))
-  (setvar "OSMODE" 0)
-  (setvar "CMDECHO" 0)
+  ; Route each device's wires: terminals facing the buses get a straight
+  ; riser, terminals on the far side of the block go round it
+  (setq i 0)
+  (foreach blk deviceBlocks
+    (setq routes (cf:device-routes blk
+                   (if (= protocol "DMX")
+                     (list (nth i dataPlusList) (nth i dataMinusList) (nth i shieldList))
+                     (list (nth i dataPlusList) (nth i dataMinusList)))
+                   (list dataPlusBusY dataMinusBusY shieldBusY)))
+    (setq plusRoutes  (append plusRoutes  (list (car routes))))
+    (setq minusRoutes (append minusRoutes (list (cadr routes))))
+    (if (= protocol "DMX")
+      (setq shieldRoutes (append shieldRoutes (list (caddr routes))))
+    )
+    (setq i (1+ i))
+  )
 
   ; -----------------------------------------------------------
-  ; PHASE 1: DATA+ BUS WITH SMART BRIDGES
+  ; PHASE 1: DATA+ BUS WITH SMART BRIDGES (White for DALI and DMX)
   ; -----------------------------------------------------------
   (princ "\nDrawing Data+ Bus...")
-
-  ; A. Vertical Risers with Smart Bridges
-  (foreach pt dataPlusList
-    (setq x (car pt))
-    (setq y (cadr pt))
-
-    (setq ptStart (list x (+ y 5.0) 0.0))
-    (setq ptTop (list x dataPlusBusY 0.0))
-
-    ; All devices use smart bridge detection (White for both DALI and DMX)
-    (smart-wire ptStart ptTop BrRad ColPlus)
-  )
-
-  ; B. Horizontal Bus
-  (setvar "CECOLOR" (itoa ColPlus))  ; Reset color after smart-wire
-  (setq startX (car (car dataPlusList)))
-  (setq endX (car (last dataPlusList)))
-  (command "LINE" (list startX dataPlusBusY 0.0) (list endX dataPlusBusY 0.0) "")
+  (setq plusDots (cf:draw-bus plusRoutes dataPlusBusY ColPlus T BrRad))
 
   ; -----------------------------------------------------------
-  ; PHASE 2: DATA- BUS WITH SMART BRIDGES
+  ; PHASE 2: DATA- BUS WITH SMART BRIDGES (White for DALI, Green for DMX)
   ; -----------------------------------------------------------
   (princ "\nDrawing Data- Bus...")
-
-  ; A. Vertical Risers with Smart Bridges
-  (foreach dataMinusPt dataMinusList
-    (setq x (car dataMinusPt))
-    (setq y (cadr dataMinusPt))
-
-    (setq ptStart (list x (+ y 5.0) 0.0))
-    (setq ptTop (list x dataMinusBusY 0.0))
-
-    ; Color: White for DALI, Green for DMX
-    (smart-wire ptStart ptTop BrRad ColMinus)
-  )
-
-  ; B. Horizontal Bus
-  (setvar "CECOLOR" (itoa ColMinus))  ; Reset color after smart-wire
-  (setq startX (car (car dataMinusList)))
-  (setq endX (car (last dataMinusList)))
-  (command "LINE" (list startX dataMinusBusY 0.0) (list endX dataMinusBusY 0.0) "")
+  (setq minusDots (cf:draw-bus minusRoutes dataMinusBusY ColMinus T BrRad))
 
   ; -----------------------------------------------------------
-  ; PHASE 3: SHIELD BUS WITH SMART BRIDGES (DMX ONLY)
+  ; PHASE 3: SHIELD BUS WITH SMART BRIDGES (DMX ONLY, Brown)
   ; -----------------------------------------------------------
   (if (= protocol "DMX")
     (progn
       (princ "\nDrawing Shield Bus...")
-
-      ; A. Vertical Risers with Smart Bridges
-      (foreach shieldPt shieldList
-        (setq x (car shieldPt))
-        (setq y (cadr shieldPt))
-
-        (setq ptStart (list x (+ y 5.0) 0.0))
-        (setq ptTop (list x shieldBusY 0.0))
-
-        ; Color: Brown for shield
-        (smart-wire ptStart ptTop BrRad ColShield)
-      )
-
-      ; B. Horizontal Bus
-      (setvar "CECOLOR" (itoa ColShield))  ; Reset color after smart-wire
-      (setq startX (car (car shieldList)))
-      (setq endX (car (last shieldList)))
-      (command "LINE" (list startX shieldBusY 0.0) (list endX shieldBusY 0.0) "")
+      (setq shieldDots (cf:draw-bus shieldRoutes shieldBusY ColShield T BrRad))
     )
   )
 
@@ -232,43 +194,10 @@
   ; PHASE 4: JUNCTION DOTS (PROTOCOL-AWARE)
   ; -----------------------------------------------------------
   (princ "\nAdding Junction Dots...")
+  (foreach pt plusDots   (draw-junction-dot pt DotRad ColPlus))
+  (foreach pt minusDots  (draw-junction-dot pt DotRad ColMinus))
+  (foreach pt shieldDots (draw-junction-dot pt DotRad ColShield))
 
-  ; Skip first and last devices
-  (setq i 0)
-  (setq len deviceCount)
-
-  (foreach pt dataPlusList
-    ; Only process if NOT first and NOT last
-    (if (and (> i 0) (< i (- len 1)))
-      (progn
-        (setq x (car pt))
-        (setq dataMinusX (car (nth i dataMinusList)))
-
-        ; Data+ dot (White for both DALI and DMX)
-        (setvar "CECOLOR" (itoa ColPlus))
-        (draw-junction-dot (list x dataPlusBusY 0.0) DotRad)
-
-        ; Data- dot (White for DALI, Green for DMX)
-        (setvar "CECOLOR" (itoa ColMinus))
-        (draw-junction-dot (list dataMinusX dataMinusBusY 0.0) DotRad)
-
-        ; Shield dot (Brown, DMX only)
-        (if (= protocol "DMX")
-          (progn
-            (setq shieldX (car (nth i shieldList)))
-            (setvar "CECOLOR" (itoa ColShield))
-            (draw-junction-dot (list shieldX shieldBusY 0.0) DotRad)
-          )
-        )
-      )
-    )
-    (setq i (1+ i))
-  )
-
-  ; Restore Settings
-  (setvar "OSMODE" oldSnap)
-  (setvar "CECOLOR" "BYLAYER")
-  (setvar "CMDECHO" 1)
   (princ "\nData Line Bus Complete.")
   (princ)
 )
@@ -276,7 +205,7 @@
 ; ============================================================================
 ; HELPER: Find Data Line Attribute
 ; Searches block for specified data line attribute tag and returns position
-; Returns: Attribute insertion point (terminal location) or nil
+; Returns: Attribute anchor point (terminal location) or nil
 ; ============================================================================
 (defun find-data-attribute (blockEnt attrTag / attEnt attData tag pos)
   (setq attEnt (entnext blockEnt))
@@ -287,52 +216,12 @@
 
     ; Case-insensitive match with wildcards
     (if (wcmatch (strcase tag) (strcat "*" (strcase attrTag) "*"))
-      (progn
-        (setq pos (cdr (assoc 10 attData)))
-        ; Force Z=0 for reliability
-        (setq pos (list (car pos) (cadr pos) 0.0))
-      )
+      (setq pos (cf:att-point attData))
     )
     (setq attEnt (entnext attEnt))
   )
   pos  ; Returns position or nil
 )
-
-; ============================================================================
-; HELPER: DRAW JUNCTION DOT
-; Uses a Circle + Solid Hatch (with color fix)
-; ============================================================================
-(defun draw-junction-dot (cenPt rad / lastEnt hatchEnt entData currentColor)
-  ; Get the current color setting
-  (setq currentColor (getvar "CECOLOR"))
-
-  ; Draw the circle
-  (command "CIRCLE" cenPt rad)
-  (setq lastEnt (entlast))
-
-  ; Hatch it Solid
-  ; Note: -HATCH is the command line version.
-  (if (fnob "-HATCH") ; Check if command exists (ProgeCAD safety)
-    (progn
-      (command "-HATCH" "P" "SOLID" "S" lastEnt "" "")
-      ; Get the hatch entity and set its color explicitly
-      (setq hatchEnt (entlast))
-      (setq entData (entget hatchEnt))
-      ; Replace or add color code (62) with current color
-      (setq entData (subst (cons 62 (atoi currentColor)) (assoc 62 entData) entData))
-      ; If no color code exists, add it
-      (if (not (assoc 62 entData))
-        (setq entData (append entData (list (cons 62 (atoi currentColor)))))
-      )
-      (entmod entData)
-    )
-    ; Fallback for older CAD versions: Donut with 0 ID
-    (command "DONUT" 0.0 (* rad 2.0) cenPt "")
-  )
-)
-
-; Check if a command exists (Safety for ProgeCAD versions)
-(defun fnob (x) (if (getcname x) T nil))
 
 (princ "\nData Line Bus loaded. Type DATALINE to run.")
 (princ)

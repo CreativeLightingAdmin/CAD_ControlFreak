@@ -4,7 +4,7 @@
 ; PURPOSE:
 ;   Automatically places and wires input devices (switches) to a control block
 ;   based on user-specified input types. Supports momentary/latching switches,
-;   spares (skip), and fanouts (junction dots).
+;   spares (skip), and fanouts.
 ;
 ; DEPENDENCIES:
 ;   - SmartJumper_Lib.lsp (REQUIRED - must be loaded first)
@@ -20,13 +20,7 @@
 ;   M = Momentary switch (places BLOCK_MOMENTARY and wires to INx)
 ;   L = Latching switch (places BLOCK_LATCHING and wires to INx)
 ;   S = Spare (skips this input entirely - no block, no wire)
-;   F = Fanout (places junction dot at INx for connection to other devices)
-;
-; CONFIGURATION:
-;   Before first use, edit the configuration constants below to match your
-;   block library:
-;     - BLOCK_MOMENTARY: Name of your momentary switch block
-;     - BLOCK_LATCHING: Name of your latching switch block
+;   F = Fanout (short drop + label at INx for connection to other devices)
 ;
 ; REQUIREMENTS:
 ;   Control Device Block:
@@ -34,18 +28,22 @@
 ;     - Attributes mark terminal locations for wiring
 ;
 ;   Switch Blocks:
-;     - Must have attribute named: OUT (output terminal)
-;     - Must have attribute named: GND (ground terminal - future use)
+;     - Must have attributes named OUT and GND on the two terminals
+;       (not "Constant" attributes)
 ;
 ; LAYOUT:
-;   - Switches placed vertically below control device
-;   - 10mm spacing between switches (configurable)
-;   - Left-to-right alignment with control device inputs
-;   - Wires use smart-wire for automatic bridge detection
+;   - First MAX_INPUTS_PER_COLUMN inputs: column LEFT of the control device,
+;     next MAX_INPUTS_PER_COLUMN: column RIGHT of it
+;   - Rows are ordered so that no wires cross: in the left column the
+;     leftmost input is on top, in the right column the rightmost is on top
+;   - Column positions and row pitch are worked out from the switch block's
+;     actual size, so any switch symbol fits
+;   - Each wire: vertical drop -> 45 degree bend -> horizontal to the switch
+;     terminal facing the device; the other terminal goes to a ground bus
 ;
 ; AUTHOR: Mike
-; VERSION: 1.0
-; DATE: 2025-12-10
+; VERSION: 2.0
+; DATE: 2026-10-14
 ; ============================================================================
 
 (vl-load-com)
@@ -53,38 +51,33 @@
 ; ============================================================================
 ; CONFIGURATION CONSTANTS
 ; ============================================================================
-; IMPORTANT: Customize these values to match your block library!
 
-; --- Block Names (USER MUST CUSTOMIZE THESE) ---
+; --- Block Names ---
 (setq BLOCK_MOMENTARY "SWITCHM")       ; Momentary switch block name
 (setq BLOCK_LATCHING "SWITCHL")        ; Latching switch block name
 
 ; --- Layout Configuration ---
 (setq MAX_INPUTS_PER_COLUMN 6)         ; Maximum switches per vertical stack
-(setq SWITCH_SPACING_VERTICAL 20.0)    ; Vertical spacing between switches (mm)
-(setq COLUMN_SPACING_HORIZONTAL 30.0)  ; Horizontal spacing between columns (mm)
+(setq SWITCH_SPACING_VERTICAL 20.0)    ; Minimum row pitch (mm)
+(setq SWITCH_GAP_VERTICAL 5.0)         ; Minimum clear gap between switches (mm)
+(setq COLUMN_GAP 20.0)                 ; Gap from outermost input drop to switch edge (mm)
+(setq TOP_CLEARANCE 60.0)              ; Lowest IN point down to top of first switch row (mm)
 
 ; --- Wiring Configuration ---
 (setq WIRE_DROP_START 5.0)             ; Start wire 5mm south of IN point
-(setq WIRE_DROP_END 61.86)             ; End wire 61.86mm south of IN point (aligns with OUT terminal)
-(setq WIRE_DROP_LENGTH 56.86)          ; Total vertical drop (61.86 - 5 = 56.86mm)
-(setq BEND_RADIUS 2.0)                 ; 90° bend radius
+(setq WIRE_BEND 5.0)                   ; Size of the 45 degree bend (mm)
+(setq FANOUT_DROP 50.0)                ; Fanout wire length below IN point (mm)
 (setq WIRE_COLOR 7)                    ; White (general purpose)
-(setq BRIDGE_RADIUS 2.0)               ; Bridge radius for smart-wire
-
-; --- Junction Dot Configuration ---
-(setq DOT_RADIUS 1.0)                  ; Junction dot radius for fanouts
-(setq FANOUT_COLOR 7)                  ; White for fanout junction dots
 
 ; --- Label Configuration ---
 (setq LABEL_HEIGHT 2.5)                ; Text height (mm)
-(setq LABEL_OFFSET_X_SWITCH 5.0)       ; Horizontal offset from switch (mm)
+(setq LABEL_GAP 1.0)                   ; Gap between switch and its label (mm)
 (setq LABEL_OFFSET_X_FANOUT 3.0)       ; Horizontal offset from fanout (mm)
 (setq LABEL_COLOR 7)                   ; White
 
-; --- Ground Bus Configuration (Column 0 only for now) ---
+; --- Ground Bus Configuration ---
 (setq GND_BUS_COLOR 3)                 ; Green
-(setq GND_BUS_HORIZONTAL_LENGTH 20.0) ; Horizontal extension from switch (mm)
+(setq GND_BUS_HORIZONTAL_LENGTH 20.0)  ; Bus distance beyond outermost GND terminal (mm)
 (setq GND_BUS_DOT_RADIUS 1.0)          ; Junction dot radius
 
 ; --- Block Insertion Parameters ---
@@ -96,319 +89,282 @@
 ; ============================================================================
 
 ; ----------------------------------------------------------------------------
-; Check if a command exists (Safety for ProgeCAD versions)
-; ----------------------------------------------------------------------------
-(defun fnob (x) (if (getcname x) T nil))
-
-; ----------------------------------------------------------------------------
-; DRAW JUNCTION DOT
-; Uses a Circle + Solid Hatch (Cleaner than VBA's line segments)
-; ----------------------------------------------------------------------------
-(defun draw-junction-dot (cenPt rad / lastEnt hatchEnt entData currentColor)
-  ; Get the current color setting
-  (setq currentColor (getvar "CECOLOR"))
-
-  ; Draw the circle
-  (command "CIRCLE" cenPt rad)
-  (setq lastEnt (entlast))
-
-  ; Hatch it Solid
-  ; Note: -HATCH is the command line version.
-  ; "s" selects object, "lastEnt" is the circle, "" finishes selection
-  (if (fnob "-HATCH") ; Check if command exists (ProgeCAD safety)
-    (progn
-      (command "-HATCH" "P" "SOLID" "S" lastEnt "" "")
-      ; Get the hatch entity and set its color explicitly
-      (setq hatchEnt (entlast))
-      (setq entData (entget hatchEnt))
-      ; Replace or add color code (62) with current color
-      (setq entData (subst (cons 62 (atoi currentColor)) (assoc 62 entData) entData))
-      ; If no color code exists, add it
-      (if (not (assoc 62 entData))
-        (setq entData (append entData (list (cons 62 (atoi currentColor)))))
-      )
-      (entmod entData)
-    )
-    ; Fallback for older CAD versions: Donut with 0 ID
-    (command "DONUT" 0.0 (* rad 2.0) cenPt "")
-  )
-)
-
-; ----------------------------------------------------------------------------
 ; GET CONTROL DEVICE
 ; Prompts user to select control block
 ; Returns: Block entity name or nil
 ; ----------------------------------------------------------------------------
-(defun get-control-device ( / ss ent)
+(defun get-control-device ( / ss)
   (princ "\nSelect control device block: ")
   (setq ss (ssget ":S" '((0 . "INSERT"))))
-  (if ss
-    (setq ent (ssname ss 0))
-    nil
-  )
+  (if ss (ssname ss 0))
 )
 
 ; ----------------------------------------------------------------------------
 ; EXTRACT INPUT ATTRIBUTES
 ; Finds all INx attributes in control block and returns sorted list
-; Input: Block entity name
-; Returns: List of attribute data: ((number tag position) ...)
-;          Example: ((1 "IN1" (100.0 200.0 0.0)) (2 "IN2" (110.0 200.0 0.0)) ...)
+; Returns: ((number tag position) ...) sorted by number
 ; ----------------------------------------------------------------------------
-(defun extract-input-attributes (blockEnt / attrList attEnt attData attTag attPos inputNum)
-  (setq attrList '())
-
-  ; Get first attribute
+(defun extract-input-attributes (blockEnt / attrList attEnt attData attTag)
   (setq attEnt (entnext blockEnt))
-
-  ; Loop through all attributes
   (while (and attEnt (= "ATTRIB" (cdr (assoc 0 (entget attEnt)))))
     (setq attData (entget attEnt))
-    (setq attTag (cdr (assoc 2 attData)))      ; Attribute tag
+    (setq attTag (cdr (assoc 2 attData)))
 
-    ; Check if tag matches pattern "IN" followed by digits
-    (if (wcmatch (strcase attTag) "IN[0-9]*")
-      (progn
-        (setq attPos (cdr (assoc 10 attData)))   ; Attribute position (terminal location)
-        ; Force Z=0 for reliability
-        (setq attPos (list (car attPos) (cadr attPos) 0.0))
-        ; Extract number from tag (e.g., "IN1" -> 1)
-        (setq inputNum (atoi (substr attTag 3)))
-        ; Store: (number tag position)
-        (setq attrList (cons (list inputNum attTag attPos) attrList))
-      )
+    ; Tag is "IN" followed by digits
+    (if (wcmatch (strcase attTag) "IN#*")
+      (setq attrList (cons (list (atoi (substr attTag 3)) attTag (cf:att-point attData))
+                           attrList))
     )
-
     (setq attEnt (entnext attEnt))
   )
-
-  ; Sort list by number to ensure IN1, IN2, IN3... order
   (vl-sort attrList '(lambda (a b) (< (car a) (car b))))
 )
 
 ; ----------------------------------------------------------------------------
 ; PARSE INPUT STRING (WITH AUTO-FILL)
-; Converts user input string into list of input types
-; Input: inputStr - String like "M M L" (can be partial)
-;        numInputs - Total number of inputs to fill
-; Returns: List of uppercase characters padded with "S" to match numInputs length
-;          Example: "M M L" with numInputs=6 → ("M" "M" "L" "S" "S" "S")
-;          or nil on error
+; "M M L" with numInputs=6 -> ("M" "M" "L" "S" "S" "S"), or nil on error
 ; ----------------------------------------------------------------------------
 (defun parse-input-string (inputStr numInputs / charList currentChar i)
-  (setq inputStr (strcase inputStr))  ; Convert to uppercase
-  (setq charList '())
+  (setq inputStr (strcase inputStr))
   (setq i 1)
 
-  ; Loop through each character
   (while (<= i (strlen inputStr))
     (setq currentChar (substr inputStr i 1))
-    ; Only add non-space characters
-    (if (not (= currentChar " "))
+    (if (/= currentChar " ")
       (if (wcmatch currentChar "M,L,S,F")
         (setq charList (append charList (list currentChar)))
         (progn
           (princ (strcat "\nError: Invalid character '" currentChar "'"))
           (setq charList nil)
-          (setq i (+ (strlen inputStr) 1))  ; Exit loop
+          (setq i (strlen inputStr))  ; Exit loop
         )
       )
     )
     (setq i (1+ i))
   )
 
-  ; Auto-fill with "S" if needed, or truncate if too many
   (if charList
     (progn
-      ; If too many inputs, truncate to numInputs
       (if (> (length charList) numInputs)
         (progn
           (princ (strcat "\nWarning: Too many inputs (" (itoa (length charList))
                         "), using first " (itoa numInputs)))
-          ; Take only first numInputs elements
           (setq charList (reverse (nthcdr (- (length charList) numInputs) (reverse charList))))
         )
       )
-      ; If too few inputs, pad with "S"
       (while (< (length charList) numInputs)
         (setq charList (append charList (list "S")))
       )
     )
   )
-
   charList
 )
 
 ; ----------------------------------------------------------------------------
-; CALCULATE PLACEMENT POSITIONS (COLUMN-BASED LAYOUT)
-; Calculates insertion points for switch blocks in vertical columns
-; Max 6 switches per column, column 0 on LEFT, column 1 on RIGHT
-; Input: Input attribute list from extract-input-attributes
-;        Input type list from parse-input-string
-; Returns: Association list: ((index type insertPt inxPos) ...)
+; MISSING SWITCH BLOCKS
+; Names of the switch blocks the input types need but the drawing doesn't have
 ; ----------------------------------------------------------------------------
-(defun calculate-placement-positions (inputAttrs inputTypes / placementList minY minX leftX rightX
-                                       baseX baseY i inputAttr inputType inxPos
-                                       columnIndex rowIndex x y insertPt col1RefX)
-  (setq placementList '())
+(defun missing-switch-blocks (inputTypes / needed)
+  (if (member "M" inputTypes) (setq needed (cons BLOCK_MOMENTARY needed)))
+  (if (member "L" inputTypes) (setq needed (cons BLOCK_LATCHING needed)))
+  (vl-remove-if '(lambda (b) (tblsearch "BLOCK" b)) needed)
+)
 
-  ; Find leftmost X coordinate and lowest Y coordinate from all INx attributes
-  (setq minX 1000000.0)
-  (setq minY 1000000.0)
-  (foreach attr inputAttrs
-    (setq x (car (caddr attr)))   ; Get X from position
-    (setq y (cadr (caddr attr)))  ; Get Y from position
-    (if (< x minX) (setq minX x))
-    (if (< y minY) (setq minY y))
+(defun cf:join (strs sep / res)
+  (foreach s strs
+    (setq res (if res (strcat res sep s) s))
   )
-
-  ; Calculate base X positions for each column
-  (setq leftX (- minX 20.0))  ; Left column: 20mm to the left of leftmost IN point
-
-  ; For right column, use the X coordinate of the 7th input (index 6) if it exists
-  (if (>= (length inputAttrs) 7)
-    (setq col1RefX (car (caddr (nth 6 inputAttrs))))  ; X of IN7
-    (setq col1RefX minX)  ; Fallback if less than 7 inputs
-  )
-  (setq rightX (+ col1RefX 20.0))  ; Right column: 20mm to the right of IN7
-
-  (setq baseY (- minY WIRE_DROP_END 10.0))  ; 61.86mm below + 10mm clearance
-
-  ; Build placement list with column-based layout
-  (setq i 0)
-  (while (< i (length inputTypes))
-    (setq inputAttr (nth i inputAttrs))
-    (setq inputType (nth i inputTypes))
-    (setq inxPos (caddr inputAttr))  ; INx position
-
-    ; Calculate column and row
-    (setq columnIndex (/ i MAX_INPUTS_PER_COLUMN))  ; Integer division
-    (setq rowIndex (rem i MAX_INPUTS_PER_COLUMN))   ; Remainder (row in column)
-
-    ; Calculate insertion point with FIXED X per column
-    ; Column 0 (IN1-6): Fixed X at leftX, normal stacking (top to bottom)
-    ; Column 1 (IN7-12): Fixed X at rightX, flipped stacking (bottom to top)
-    (if (= columnIndex 0)
-      (progn
-        (setq x leftX)
-        (setq y (- baseY (* rowIndex SWITCH_SPACING_VERTICAL)))
-      )
-      (progn
-        (setq x rightX)
-        (setq y (- baseY (* (- (- MAX_INPUTS_PER_COLUMN 1) rowIndex) SWITCH_SPACING_VERTICAL)))
-      )
-    )
-    (setq insertPt (list x y 0.0))
-
-    ; Add to placement list
-    (setq placementList (append placementList
-                                (list (list i inputType insertPt inxPos))))
-
-    (setq i (1+ i))
-  )
-
-  placementList
+  res
 )
 
 ; ----------------------------------------------------------------------------
 ; INSERT SWITCH BLOCK
-; Inserts a switch block at specified position using VLA-COM with error handling
-; Input: Block name, insertion point
-; Returns: Inserted block entity name or nil
+; Returns: VLA object of the inserted block or nil
 ; ----------------------------------------------------------------------------
-(defun insert-switch-block (blockName insertPt / blockDef doc mSpace blockObj result errObj)
-  ; Check if block exists
-  (setq blockDef (tblsearch "BLOCK" blockName))
-  (if (not blockDef)
+(defun insert-switch-block (blockName insertPt / obj)
+  (setq obj (vl-catch-all-apply 'vla-InsertBlock
+              (list (vla-get-modelspace (vla-get-activedocument (vlax-get-acad-object)))
+                    (vlax-3d-point insertPt)
+                    blockName
+                    BLOCK_SCALE BLOCK_SCALE BLOCK_SCALE
+                    BLOCK_ROTATION)))
+  (if (vl-catch-all-error-p obj)
     (progn
-      (princ (strcat "\nWarning: Block '" blockName "' not found in drawing. Skipping..."))
+      (princ (strcat "\nWarning: Failed to insert block '" blockName "': "
+                     (vl-catch-all-error-message obj)))
       nil
     )
-    (progn
-      ; Get the active document and modelspace
-      (setq doc (vla-get-activedocument (vlax-get-acad-object)))
-      (setq mSpace (vla-get-modelspace doc))
+    obj
+  )
+)
 
-      ; Insert block using VLA-COM with error handling
-      (setq errObj (vl-catch-all-apply 'vla-InsertBlock
-                     (list mSpace
-                           (vlax-3d-point insertPt)
-                           blockName
-                           BLOCK_SCALE
-                           BLOCK_SCALE
-                           BLOCK_SCALE
-                           BLOCK_ROTATION)))
-
-      ; Check if insertion was successful
-      (if (vl-catch-all-error-p errObj)
-        (progn
-          (princ (strcat "\nWarning: Failed to insert block '" blockName "': "
-                        (vl-catch-all-error-message errObj)))
-          nil
-        )
-        (progn
-          ; Convert VLA object to entity name
-          (setq result (vlax-vla-object->ename errObj))
-          result
+; ----------------------------------------------------------------------------
+; SWITCH EXTENTS
+; Size of the switch blocks relative to their insertion point, measured by
+; inserting each at 0,0 and deleting it again.
+; Returns: ((minX minY) (maxX maxY)) covering all given blocks, or nil
+; ----------------------------------------------------------------------------
+(defun switch-extents (blockNames / obj res mn mx loX loY hiX hiY)
+  (foreach name blockNames
+    (if (setq obj (insert-switch-block name '(0.0 0.0 0.0)))
+      (progn
+        (setq res (vl-catch-all-apply 'vla-getboundingbox (list obj 'mn 'mx)))
+        (vla-delete obj)
+        (if (not (vl-catch-all-error-p res))
+          (progn
+            (setq mn (vlax-safearray->list mn))
+            (setq mx (vlax-safearray->list mx))
+            (setq loX (if loX (min loX (car mn)) (car mn)))
+            (setq loY (if loY (min loY (cadr mn)) (cadr mn)))
+            (setq hiX (if hiX (max hiX (car mx)) (car mx)))
+            (setq hiY (if hiY (max hiY (cadr mx)) (cadr mx)))
+          )
         )
       )
     )
   )
+  (if loX (list (list loX loY) (list hiX hiY)))
 )
 
 ; ----------------------------------------------------------------------------
 ; FIND SWITCH CONNECTION TERMINAL
 ; Finds the OUT or GND attribute position in a switch block
-; Input: Switch block entity name, attribute name ("OUT" or "GND")
 ; Returns: Terminal position (x y z) or nil
 ; ----------------------------------------------------------------------------
-(defun find-switch-connection-terminal (switchEnt attrName / attEnt attData attTag pos)
-  (setq pos nil)
-
-  ; Get first attribute
+(defun find-switch-connection-terminal (switchEnt attrName / attEnt attData pos)
   (setq attEnt (entnext switchEnt))
-
-  ; Loop through attributes
   (while (and attEnt
               (= "ATTRIB" (cdr (assoc 0 (entget attEnt))))
               (not pos))
     (setq attData (entget attEnt))
-    (setq attTag (cdr (assoc 2 attData)))
-
-    ; Find attribute with tag matching the requested attribute
-    (if (wcmatch (strcase attTag) (strcat "*" (strcase attrName) "*"))
-      (progn
-        (setq pos (cdr (assoc 10 attData)))
-        ; Force Z=0
-        (setq pos (list (car pos) (cadr pos) 0.0))
-      )
+    (if (wcmatch (strcase (cdr (assoc 2 attData))) (strcat "*" (strcase attrName) "*"))
+      (setq pos (cf:att-point attData))
     )
-
     (setq attEnt (entnext attEnt))
   )
-
   pos
 )
 
 ; ----------------------------------------------------------------------------
 ; CREATE INPUT LABEL
-; Creates text label for input (format: "IN1: ", "IN2: ", etc.)
-; Input: inputNumber - the input number (1, 2, 3...)
-;        position - (x y z) where to place the label
-;        rotation - rotation angle (0 = horizontal, 90 = vertical)
-; Returns: T on success
+; Left-justified "INx: " text in WCS, rotation in degrees
 ; ----------------------------------------------------------------------------
-(defun create-input-label (inputNumber position rotation / labelText)
-  ; Format label text
-  (setq labelText (strcat "IN" (itoa inputNumber) ": "))
-
-  ; Set color
-  (setvar "CECOLOR" (itoa LABEL_COLOR))
-
-  ; Create text with specified rotation
-  (command "TEXT" position LABEL_HEIGHT (itoa rotation) labelText)
-
+(defun create-input-label (inputNumber position rotation)
+  (entmake (list '(0 . "TEXT")
+                 (cons 8 (getvar "CLAYER"))
+                 (cons 62 LABEL_COLOR)
+                 (cons 7 (getvar "TEXTSTYLE"))
+                 (cons 10 (list (car position) (cadr position) 0.0))
+                 (cons 40 LABEL_HEIGHT)
+                 (cons 50 (* rotation (/ pi 180.0)))
+                 (cons 1 (strcat "IN" (itoa inputNumber) ": "))))
   T
+)
+
+; ----------------------------------------------------------------------------
+; CALCULATE PLACEMENT POSITIONS
+; Returns: ((index type insertPt inxPos side) ...)  side = -1 left, 1 right
+; Left column: IN1..IN6, leftmost input on the top row.
+; Right column: IN7..IN12, rightmost input on the top row.
+; This ordering means no wire ever has to cross another.
+; ----------------------------------------------------------------------------
+(defun calculate-placement-positions (inputAttrs inputTypes ext / xs minX maxX minY
+                                       pitch topY leftX rightX rightCount
+                                       i side row inxPos result)
+  (setq xs   (mapcar '(lambda (a) (car (caddr a))) inputAttrs))
+  (setq minX (apply 'min xs))
+  (setq maxX (apply 'max xs))
+  (setq minY (apply 'min (mapcar '(lambda (a) (cadr (caddr a))) inputAttrs)))
+
+  ; Row pitch from block height, never less than the configured minimum
+  (setq pitch (max SWITCH_SPACING_VERTICAL
+                   (+ (- (cadadr ext) (cadar ext)) SWITCH_GAP_VERTICAL)))
+
+  ; Top row: block top edge TOP_CLEARANCE below the lowest IN point
+  (setq topY (- minY TOP_CLEARANCE (cadadr ext)))
+
+  ; Columns: block's near edge COLUMN_GAP clear of the outermost input drops
+  (setq leftX  (- minX COLUMN_GAP (caadr ext)))
+  (setq rightX (- (+ maxX COLUMN_GAP) (caar ext)))
+
+  (setq rightCount (max 0 (min MAX_INPUTS_PER_COLUMN
+                               (- (length inputAttrs) MAX_INPUTS_PER_COLUMN))))
+
+  (setq i 0)
+  (foreach inputType inputTypes
+    (setq inxPos (caddr (nth i inputAttrs)))
+    (if (< i MAX_INPUTS_PER_COLUMN)
+      (setq side -1
+            row  i)
+      (setq side 1
+            row  (- rightCount 1 (- i MAX_INPUTS_PER_COLUMN)))
+    )
+    (setq result (cons (list i inputType
+                             (list (if (= side -1) leftX rightX) (- topY (* row pitch)) 0.0)
+                             inxPos side)
+                       result))
+    (setq i (1+ i))
+  )
+  (reverse result)
+)
+
+; ----------------------------------------------------------------------------
+; WIRE SWITCH
+; Vertical drop from INx -> 45 degree bend -> horizontal to the switch
+; terminal facing the device. Returns the other (ground) terminal or nil.
+; ----------------------------------------------------------------------------
+(defun wire-switch (switchEnt inxPos side / outPos gndPos inTerm gndTerm p0 p1 p2)
+  (setq outPos (find-switch-connection-terminal switchEnt "OUT"))
+  (setq gndPos (find-switch-connection-terminal switchEnt "GND"))
+
+  ; The terminal nearer the device takes the input, the other goes to ground
+  (cond
+    ((and outPos gndPos)
+      (if (< (abs (- (car outPos) (car inxPos))) (abs (- (car gndPos) (car inxPos))))
+        (setq inTerm outPos gndTerm gndPos)
+        (setq inTerm gndPos gndTerm outPos)
+      )
+    )
+    (T (setq inTerm (if outPos outPos gndPos)))
+  )
+
+  (if inTerm
+    (progn
+      (setq p0 (list (car inxPos) (- (cadr inxPos) WIRE_DROP_START) 0.0))
+      (setq p1 (list (car inxPos) (+ (cadr inTerm) WIRE_BEND) 0.0))
+      (setq p2 (list (+ (car inxPos) (* side WIRE_BEND)) (cadr inTerm) 0.0))
+      (cf:line p0 p1 WIRE_COLOR)
+      (cf:line p1 p2 WIRE_COLOR)
+      (cf:line p2 inTerm WIRE_COLOR)
+    )
+    (princ "\nWarning: OUT/GND attributes not found on a switch block")
+  )
+  gndTerm
+)
+
+; ----------------------------------------------------------------------------
+; DRAW GROUND BUS
+; Horizontal from each ground terminal (away from the device) to a vertical
+; bus GND_BUS_HORIZONTAL_LENGTH beyond the outermost terminal.
+; ----------------------------------------------------------------------------
+(defun draw-ground-bus (gndTerms side / xs busX ys)
+  (if gndTerms
+    (progn
+      (setq xs (mapcar 'car gndTerms))
+      (setq busX (if (= side -1)
+                   (- (apply 'min xs) GND_BUS_HORIZONTAL_LENGTH)
+                   (+ (apply 'max xs) GND_BUS_HORIZONTAL_LENGTH)))
+      (setq ys (mapcar 'cadr gndTerms))
+
+      (foreach g gndTerms
+        (cf:line g (list busX (cadr g) 0.0) GND_BUS_COLOR)
+        (draw-junction-dot (list busX (cadr g) 0.0) GND_BUS_DOT_RADIUS GND_BUS_COLOR)
+      )
+      (if (> (length gndTerms) 1)
+        (cf:line (list busX (apply 'min ys) 0.0) (list busX (apply 'max ys) 0.0) GND_BUS_COLOR)
+      )
+    )
+  )
 )
 
 ; ============================================================================
@@ -416,17 +372,11 @@
 ; ============================================================================
 
 (defun c:autoinput ( / *error* controlBlock inputAttrs inputTypes numInputs userInput
-                      placementList oldSnap oldCmd oldColor i placement currentType
-                      currentPos inxPos switchBlock outPos ptStart ptEnd rowIndex
-                      dropDistance horizStart horizEnd columnIndex terminalAttr termPos
-                      ptVertEnd pt45End verticalRemaining gndTermList gndPos gndBusX
-                      minGndY maxGndY)
+                      missing ext placementList currentType currentPos inxPos side
+                      blockName switchObj switchEnt gndTerm gndLeft gndRight)
 
   ; --- ERROR HANDLER ---
   (defun *error* (msg)
-    (if oldSnap (setvar "OSMODE" oldSnap))
-    (if oldCmd (setvar "CMDECHO" oldCmd))
-    (if oldColor (setvar "CECOLOR" oldColor))
     (if (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*"))
       (princ (strcat "\nError: " msg))
     )
@@ -434,52 +384,48 @@
   )
 
   ; --- DEPENDENCY CHECK ---
-  (if (not smart-wire)
+  (if (not cf:line)
     (progn
-      (alert "Error: SmartJumper_Lib.lsp is not loaded!\nLoad it first with: (load \"SmartJumper_Lib.lsp\")")
+      (alert "Error: SmartJumper_Lib.lsp is not loaded!\nLoad ControlFreak.lsp first.")
       (exit)
     )
   )
 
-  ; --- DISPLAY INSTRUCTIONS ---
   (princ "\n--- AUTO INPUT DEVICE PLACEMENT ---")
-  (princ "\nInstructions:")
-  (princ "\n  M = Momentary switch")
-  (princ "\n  L = Latching switch")
-  (princ "\n  S = Spare (skip)")
-  (princ "\n  F = Fanout (junction dot)")
+  (princ "\n  M = Momentary switch   L = Latching switch")
+  (princ "\n  S = Spare (skip)       F = Fanout")
 
   ; --- STEP 1: SELECT CONTROL DEVICE ---
   (setq controlBlock (get-control-device))
   (if (not controlBlock)
-    (progn
-      (princ "\nNo block selected. Command cancelled.")
-      (exit)
-    )
+    (progn (princ "\nNo block selected. Command cancelled.") (exit))
   )
 
   ; --- STEP 2: EXTRACT INPUT ATTRIBUTES ---
   (setq inputAttrs (extract-input-attributes controlBlock))
-  (if (= (length inputAttrs) 0)
+  (if (not inputAttrs)
     (progn
       (alert "Error: No INx attributes found on selected block!\nControl device must have IN1, IN2, IN3... attributes.")
       (exit)
     )
   )
+  (if (> (length inputAttrs) (* 2 MAX_INPUTS_PER_COLUMN))
+    (progn
+      (princ (strcat "\nWarning: only the first " (itoa (* 2 MAX_INPUTS_PER_COLUMN))
+                     " inputs can be laid out; the rest are ignored."))
+      (setq inputAttrs (reverse (nthcdr (- (length inputAttrs) (* 2 MAX_INPUTS_PER_COLUMN))
+                                        (reverse inputAttrs))))
+    )
+  )
 
   (setq numInputs (length inputAttrs))
   (princ (strcat "\nFound " (itoa numInputs) " inputs: "))
-  (foreach attr inputAttrs
-    (princ (strcat (cadr attr) " "))  ; Print IN1, IN2, IN3...
-  )
+  (foreach attr inputAttrs (princ (strcat (cadr attr) " ")))
 
   ; --- STEP 3: GET USER INPUT STRING ---
-  (princ (strcat "\n(remaining will auto-fill as 'S')"))
   (setq userInput (getstring T (strcat "\nEnter up to " (itoa numInputs)
                                        " input types (M/L/S/F) separated by spaces: ")))
-  (if (not userInput)
-    (setq userInput "")  ; Empty input will auto-fill all as "S"
-  )
+  (if (not userInput) (setq userInput ""))
 
   ; --- STEP 4: PARSE AND VALIDATE INPUT (WITH AUTO-FILL) ---
   (setq inputTypes (parse-input-string userInput numInputs))
@@ -489,195 +435,91 @@
       (exit)
     )
   )
-
-  ; Display what was filled
-  (if (< (length (vl-remove "S" (vl-remove " " (vl-string->list (strcase userInput)))))
-         numInputs)
-    (princ (strcat "\nAuto-filled remaining inputs as 'S' (spare)"))
+  (if (< (length (vl-remove 32 (vl-string->list userInput))) numInputs)
+    (princ "\nAuto-filled remaining inputs as 'S' (spare)")
   )
 
-  ; --- STEP 5: CALCULATE PLACEMENT POSITIONS ---
-  (setq placementList (calculate-placement-positions inputAttrs inputTypes))
-
-  ; --- STEP 6: SAVE ENVIRONMENT AND SETUP ---
-  (setq oldSnap (getvar "OSMODE"))
-  (setq oldCmd (getvar "CMDECHO"))
-  (setq oldColor (getvar "CECOLOR"))
-  (setvar "OSMODE" 0)
-  (setvar "CMDECHO" 0)
-
-  ; --- STEP 7: PLACE SWITCH BLOCKS ---
-  (princ "\nPlacing switch blocks...")
-  (setq i 0)
-  (foreach placement placementList
-    (setq currentType (cadr placement))
-    (setq currentPos (caddr placement))
-
-    (cond
-      ((= currentType "M")
-        (setq switchBlock (insert-switch-block BLOCK_MOMENTARY currentPos))
-        (if switchBlock
-          ; Store block entity in placement list for wiring phase
-          (setq placementList
-                (subst (append placement (list switchBlock))
-                       placement
-                       placementList))
-        )
-      )
-      ((= currentType "L")
-        (setq switchBlock (insert-switch-block BLOCK_LATCHING currentPos))
-        (if switchBlock
-          (setq placementList
-                (subst (append placement (list switchBlock))
-                       placement
-                       placementList))
-        )
-      )
-      ; S and F types: no blocks to place
+  ; --- STEP 5: CHECK SWITCH BLOCKS ARE AVAILABLE ---
+  ; Import them from the product library if needed, otherwise stop with a
+  ; clear message rather than silently skipping every switch
+  (setq missing (missing-switch-blocks inputTypes))
+  (if (and missing c:cfblocks)
+    (progn
+      (princ "\nSwitch block(s) not in this drawing - importing product library...")
+      (c:cfblocks)
+      (setq missing (missing-switch-blocks inputTypes))
     )
-    (setq i (1+ i))
+  )
+  (if missing
+    (progn
+      (alert (strcat "Switch block(s) not found: " (cf:join missing ", ")
+                     "\n\nAdd them to the product library (with OUT and GND attributes),"
+                     "\nor change BLOCK_MOMENTARY / BLOCK_LATCHING at the top of AutoInputDevice.lsp."))
+      (exit)
+    )
   )
 
-  ; --- STEP 8: WIRE SWITCHES WITH 2-SEGMENT PATH (INCREMENTAL DROP) AND PLACE FANOUTS ---
-  (princ "\nWiring switches...")
-  (setq i 0)
+  ; --- STEP 6: MEASURE SWITCH BLOCKS AND CALCULATE LAYOUT ---
+  (setq ext (switch-extents
+              (vl-remove-if-not '(lambda (b) (tblsearch "BLOCK" b))
+                                (list BLOCK_MOMENTARY BLOCK_LATCHING))))
+  (if (not ext)
+    (progn
+      (princ "\nWarning: couldn't measure the switch blocks - assuming 20 x 20mm.")
+      (setq ext '((-10.0 -10.0) (10.0 10.0)))
+    )
+  )
+  (setq placementList (calculate-placement-positions inputAttrs inputTypes ext))
+
+  ; --- STEP 7: PLACE AND WIRE ---
+  (princ "\nPlacing and wiring...")
   (foreach placement placementList
-    (setq currentType (cadr placement))
-    (setq currentPos (caddr placement))  ; Switch position
-    (setq inxPos (cadddr placement))     ; Control device INx position
+    (setq currentType (nth 1 placement))
+    (setq currentPos  (nth 2 placement))
+    (setq inxPos      (nth 3 placement))
+    (setq side        (nth 4 placement))
 
     (cond
-      ((or (= currentType "M") (= currentType "L"))
-        ; Get switch block entity (5th element if added in step 7)
-        (if (> (length placement) 4)
+      ((member currentType '("M" "L"))
+        (setq blockName (if (= currentType "M") BLOCK_MOMENTARY BLOCK_LATCHING))
+        (if (setq switchObj (insert-switch-block blockName currentPos))
           (progn
-            (setq switchBlock (nth 4 placement))
-
-            ; Determine which column and which terminal to use
-            (setq columnIndex (/ i MAX_INPUTS_PER_COLUMN))
-            (setq rowIndex (rem i MAX_INPUTS_PER_COLUMN))
-
-            ; Column 0 (inputs 0-5): Connect to OUT (left side), wire goes LEFT
-            ; Column 1 (inputs 6-11): Connect to GND (right side), wire goes RIGHT
-            (if (= columnIndex 0)
-              (setq terminalAttr "OUT")
-              (setq terminalAttr "GND")
-            )
-
-            (setq termPos (find-switch-connection-terminal switchBlock terminalAttr))
-            (if termPos
-              (progn
-                ; *** 3-SEGMENT WIRING PATH: VERTICAL → 45° ANGLE → HORIZONTAL ***
-                ; Segment 1: Vertical drop from IN point (incremental per row)
-                (setvar "CECOLOR" (itoa WIRE_COLOR))
-                (setq ptStart (list (car inxPos) (- (cadr inxPos) WIRE_DROP_START) 0.0))
-                (setq dropDistance (+ WIRE_DROP_END (* rowIndex SWITCH_SPACING_VERTICAL)))
-                (setq ptVertEnd (list (car inxPos) (- (cadr inxPos) dropDistance) 0.0))
-                (command "LINE" ptStart ptVertEnd "")
-
-                ; Segment 2: 45-degree angle going down to terminal Y level
-                ; Calculate 45° endpoint: go down to terminal Y, and left/right by same amount
-                (setq verticalRemaining (- (cadr ptVertEnd) (cadr termPos)))  ; Distance down to terminal Y
-                (if (= columnIndex 0)
-                  ; Column 0: 45° down-left (225 degrees)
-                  (setq pt45End (list (- (car ptVertEnd) verticalRemaining) (cadr termPos) 0.0))
-                  ; Column 1: 45° down-right (315 degrees)
-                  (setq pt45End (list (+ (car ptVertEnd) verticalRemaining) (cadr termPos) 0.0))
-                )
-                (command "LINE" ptVertEnd pt45End "")
-
-                ; Segment 3: Horizontal to switch terminal
-                (smart-wire pt45End termPos BRIDGE_RADIUS WIRE_COLOR)
-
-                ; Create label (horizontal text for switches, 5mm offset)
-                (create-input-label (+ i 1) (list (+ (car currentPos) LABEL_OFFSET_X_SWITCH) (cadr currentPos) 0.0) 0)
+            (setq switchEnt (vlax-vla-object->ename switchObj))
+            (setq gndTerm (wire-switch switchEnt inxPos side))
+            (if gndTerm
+              (if (= side -1)
+                (setq gndLeft (cons gndTerm gndLeft))
+                (setq gndRight (cons gndTerm gndRight))
               )
-              (princ (strcat "\nWarning: " terminalAttr " attribute not found on switch at index " (itoa i)))
             )
+            ; Label at the top-right corner of the switch
+            (create-input-label (1+ (car placement))
+                                (list (+ (car currentPos) (caadr ext) LABEL_GAP)
+                                      (+ (cadr currentPos) (cadadr ext) (- LABEL_HEIGHT))
+                                      0.0)
+                                0)
           )
         )
       )
       ((= currentType "F")
-        ; Draw vertical drop to fanout (no junction dot)
-        (setvar "CECOLOR" (itoa WIRE_COLOR))
-        (setq ptStart (list (car inxPos) (- (cadr inxPos) WIRE_DROP_START) 0.0))
-        (setq ptEnd (list (car inxPos) (- (cadr inxPos) WIRE_DROP_END) 0.0))
-        (command "LINE" ptStart ptEnd "")
-
-        ; Create label at fanout position (vertical text for fanouts, 3mm offset)
-        (create-input-label (+ i 1) (list (+ (car inxPos) LABEL_OFFSET_X_FANOUT) (- (cadr inxPos) WIRE_DROP_END) 0.0) 90)
+        ; Short vertical drop, ready to connect to other devices
+        (cf:line (list (car inxPos) (- (cadr inxPos) WIRE_DROP_START) 0.0)
+                 (list (car inxPos) (- (cadr inxPos) FANOUT_DROP) 0.0)
+                 WIRE_COLOR)
+        (create-input-label (1+ (car placement))
+                            (list (+ (car inxPos) LABEL_OFFSET_X_FANOUT)
+                                  (- (cadr inxPos) FANOUT_DROP)
+                                  0.0)
+                            90)
       )
-      ; Type "S" - no action (completely skipped)
-    )
-    (setq i (1+ i))
-  )
-
-  ; --- STEP 9: GREEN GROUND BUS (COLUMN 0 ONLY) ---
-  (princ "\nDrawing ground bus...")
-  (setq gndTermList '())
-  (setq gndBusX nil)
-
-  ; Collect GND terminals from column 0 switches (first 6)
-  (setq i 0)
-  (foreach placement placementList
-    (if (< i MAX_INPUTS_PER_COLUMN)  ; Only column 0
-      (progn
-        (setq currentType (cadr placement))
-        ; Only M and L types have switches
-        (if (or (= currentType "M") (= currentType "L"))
-          (if (> (length placement) 4)
-            (progn
-              (setq switchBlock (nth 4 placement))
-              (setq gndPos (find-switch-connection-terminal switchBlock "GND"))
-              (if gndPos
-                (setq gndTermList (append gndTermList (list gndPos)))
-              )
-            )
-          )
-        )
-      )
-    )
-    (setq i (1+ i))
-  )
-
-  ; Only draw ground bus if we have GND terminals
-  (if (> (length gndTermList) 0)
-    (progn
-      ; Calculate vertical bus X position (20mm left of GND terminals)
-      (setq gndBusX (- (car (car gndTermList)) GND_BUS_HORIZONTAL_LENGTH))
-
-      ; Draw horizontal extensions from each GND terminal
-      (setvar "CECOLOR" (itoa GND_BUS_COLOR))
-      (foreach gndPos gndTermList
-        (command "LINE"
-                 gndPos
-                 (list gndBusX (cadr gndPos) 0.0)
-                 "")
-      )
-
-      ; Draw vertical bus connecting all horizontals
-      (setq minGndY (cadr (car gndTermList)))
-      (setq maxGndY (cadr (car gndTermList)))
-      (foreach gndPos gndTermList
-        (if (< (cadr gndPos) minGndY) (setq minGndY (cadr gndPos)))
-        (if (> (cadr gndPos) maxGndY) (setq maxGndY (cadr gndPos)))
-      )
-      (command "LINE"
-               (list gndBusX minGndY 0.0)
-               (list gndBusX maxGndY 0.0)
-               "")
-
-      ; Add junction dots at each connection point
-      (foreach gndPos gndTermList
-        (draw-junction-dot (list gndBusX (cadr gndPos) 0.0) GND_BUS_DOT_RADIUS)
-      )
+      ; Type "S" - no action
     )
   )
 
-  ; --- STEP 10: CLEANUP AND RESTORE ---
-  (setvar "OSMODE" oldSnap)
-  (setvar "CMDECHO" oldCmd)
-  (setvar "CECOLOR" oldColor)
+  ; --- STEP 8: GROUND BUSES (one per column, on the outer side) ---
+  (princ "\nDrawing ground buses...")
+  (draw-ground-bus gndLeft -1)
+  (draw-ground-bus gndRight 1)
 
   (princ "\nAuto Input Device Placement Complete.")
   (princ)

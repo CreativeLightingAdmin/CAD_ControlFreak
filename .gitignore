@@ -1,0 +1,10 @@
+# CAD lock files (created while a drawing is open)
+*.dwl
+*.dwl2
+
+# CAD automatic backups
+*.bak
+*.sv$
+
+# Local screenshots
+WiringBugInputs.png

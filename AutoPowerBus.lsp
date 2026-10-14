@@ -1,13 +1,15 @@
 ; ============================================================================
 ; AUTO POWER BUS - Automatic Power Bus Wiring from Smart Blocks
 ; Reads block attributes (PWR_POS, PWR_NEG) to automatically wire power buses
-; Uses SmartJumper_Lib for automatic bridge detection
+; Uses SmartJumper_Lib for drawing and automatic bridge detection
 ; ============================================================================
 
 (vl-load-com)
 
 (defun c:autopowerbus ( / *error* ss blockList posTermList negTermList skippedCount
-                         maxY i x y yPosBus yNegBus negX oldSnap len)
+                         maxY yPosBus yNegBus posDots negDots
+                         ArcOffset NegBusOffset BrRad DotRad ColPos ColNeg
+                         routes posRoutes negRoutes box)
 
   ; --- CHECK DEPENDENCY ---
   (if (not smart-wire)
@@ -27,7 +29,6 @@
 
   ; --- ERROR HANDLER ---
   (defun *error* (msg)
-    (if oldSnap (setvar "OSMODE" oldSnap))
     (if (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*"))
       (princ (strcat "\nError: " msg))
     )
@@ -61,17 +62,16 @@
   (setq blockList (sort-blocks-left-to-right blockList))
 
   ; 3. EXTRACT TERMINAL LISTS AND CALCULATE MAX HEIGHT
-  (setq posTermList '())
-  (setq negTermList '())
-  (setq maxY -1000000.0)
+  (setq posTermList (mapcar 'caddr blockList))
+  (setq negTermList (mapcar 'cadddr blockList))
+  (setq maxY (apply 'max (mapcar 'cadr posTermList)))
 
+  ; A block with its power terminals on the bottom must still sit below the bus
   (foreach blkItem blockList
-    (setq posTermList (append posTermList (list (caddr blkItem))))   ; posTerm
-    (setq negTermList (append negTermList (list (cadddr blkItem))))  ; negTerm
-
-    ; Track highest Y from positive terminals
-    (if (> (cadr (caddr blkItem)) maxY)
-      (setq maxY (cadr (caddr blkItem)))
+    (if (setq box (cf:bbox (car blkItem)))
+      (if (< (cadr (caddr blkItem)) (/ (+ (cadar box) (cadadr box)) 2.0))
+        (setq maxY (max maxY (cadadr box)))
+      )
     )
   )
 
@@ -79,96 +79,37 @@
   (setq yPosBus (+ maxY ArcOffset))
   (setq yNegBus (+ yPosBus NegBusOffset))
 
-  ; Setup Environment
-  (setq oldSnap (getvar "OSMODE"))
-  (setvar "OSMODE" 0) ; Turn off snaps for precision drawing
-  (setvar "CMDECHO" 0)
+  ; 5. ROUTE EACH DEVICE (terminals on the bottom of a block go round it)
+  (foreach blkItem blockList
+    (setq routes (cf:device-routes (car blkItem)
+                                   (list (caddr blkItem) (cadddr blkItem))
+                                   (list yPosBus yNegBus)))
+    (setq posRoutes (append posRoutes (list (car routes))))
+    (setq negRoutes (append negRoutes (list (cadr routes))))
+  )
 
   ; -----------------------------------------------------------
   ; PHASE 1: POSITIVE BUS (RED)
+  ; Bus spans leftmost to rightmost terminal, whatever the block order
   ; -----------------------------------------------------------
   (princ "\nDrawing Positive Bus...")
-  (setvar "CECOLOR" (itoa ColPos)) ; Set Red
-
-  ; A. Vertical Risers
-  (foreach pt posTermList
-    (setq x (car pt))
-    (setq y (cadr pt))
-    ; Draw from (y+5) up to yPosBus
-    (command "LINE" (list x (+ y 5.0) 0.0) (list x yPosBus 0.0) "")
-  )
-
-  ; B. Horizontal Bus
-  (setq startX (car (car posTermList)))
-  (setq endX (car (last posTermList)))
-  (command "LINE" (list startX yPosBus 0.0) (list endX yPosBus 0.0) "")
+  (setq posDots (cf:draw-bus posRoutes yPosBus ColPos nil BrRad))
 
   ; -----------------------------------------------------------
   ; PHASE 2: NEGATIVE BUS (BLUE)
+  ; Every riser uses smart-wire, so any riser crossing the positive
+  ; bus gets a bridge - including the first device's
   ; -----------------------------------------------------------
   (princ "\nDrawing Negative Bus...")
-
-  ; A. Vertical Risers (Using SmartJumper Library for automatic bridge detection!)
-  (setq i 0)
-  (foreach negPt negTermList
-    (setq negX (car negPt))
-    (setq y (cadr negPt))
-
-    ; Define the vertical path
-    (setq ptStart (list negX (+ y 5.0) 0.0))
-    (setq ptTop   (list negX yNegBus 0.0))
-
-    ; First device gets a simple line (power feed), others get smart detection
-    (if (= i 0)
-      ; First Item: Simple line (no bridge - this is the power feed)
-      (progn
-        (setvar "CECOLOR" (itoa ColNeg))
-        (command "LINE" ptStart ptTop "")
-      )
-      ; Other Items: Library will detect positive bus crossing and add bridge automatically
-      (smart-wire ptStart ptTop BrRad ColNeg)
-    )
-    (setq i (1+ i))
-  )
-
-  ; B. Horizontal Bus
-  (setvar "CECOLOR" (itoa ColNeg)) ; Set Blue again
-  (setq startNegX (car (car negTermList)))
-  (setq endNegX   (car (last negTermList)))
-  (command "LINE" (list startNegX yNegBus 0.0) (list endNegX yNegBus 0.0) "")
+  (setq negDots (cf:draw-bus negRoutes yNegBus ColNeg T BrRad))
 
   ; -----------------------------------------------------------
-  ; PHASE 3: JUNCTION DOTS (Hatched Circles)
+  ; PHASE 3: JUNCTION DOTS
   ; -----------------------------------------------------------
   (princ "\nAdding Junction Dots...")
+  (foreach pt posDots (draw-junction-dot pt DotRad ColPos))
+  (foreach pt negDots (draw-junction-dot pt DotRad ColNeg))
 
-  ; We skip the first (index 0) and last (index length-1)
-  (setq i 0)
-  (setq len (length posTermList))
-
-  (foreach pt posTermList
-    ; Only process if NOT first and NOT last
-    (if (and (> i 0) (< i (- len 1)))
-      (progn
-        (setq x (car pt))
-        (setq negX (car (nth i negTermList)))
-
-        ; 1. Red Dot (Positive Junction)
-        (setvar "CECOLOR" (itoa ColPos))
-        (draw-junction-dot (list x yPosBus 0.0) DotRad)
-
-        ; 2. Blue Dot (Negative Junction)
-        (setvar "CECOLOR" (itoa ColNeg))
-        (draw-junction-dot (list negX yNegBus 0.0) DotRad)
-      )
-    )
-    (setq i (1+ i))
-  )
-
-  ; Restore Settings
-  (setvar "OSMODE" oldSnap)
-  (setvar "CECOLOR" "BYLAYER")
-  (setvar "CMDECHO" 1)
   (princ "\nAuto Power Bus Complete.")
   (princ)
 )
@@ -198,10 +139,7 @@
         (while (and attEnt (= "ATTRIB" (cdr (assoc 0 (entget attEnt)))))
           (setq attData (entget attEnt))
           (setq attTag (cdr (assoc 2 attData)))      ; Attribute tag
-          (setq attPos (cdr (assoc 10 attData)))     ; Attribute position (TERMINAL LOCATION!)
-
-          ; Force Z=0 for reliability
-          (setq attPos (list (car attPos) (cadr attPos) 0.0))
+          (setq attPos (cf:att-point attData))       ; Attribute anchor (TERMINAL LOCATION!)
 
           ; Check for PWR_POS attribute (case-insensitive)
           (if (wcmatch (strcase attTag) "*PWR_POS*")
@@ -239,43 +177,6 @@
      )
   )
 )
-
-; ============================================================================
-; HELPER: DRAW JUNCTION DOT
-; Uses a Circle + Solid Hatch (Cleaner than VBA's line segments)
-; ============================================================================
-(defun draw-junction-dot (cenPt rad / lastEnt hatchEnt entData currentColor)
-  ; Get the current color setting
-  (setq currentColor (getvar "CECOLOR"))
-
-  ; Draw the circle
-  (command "CIRCLE" cenPt rad)
-  (setq lastEnt (entlast))
-
-  ; Hatch it Solid
-  ; Note: -HATCH is the command line version.
-  ; "s" selects object, "lastEnt" is the circle, "" finishes selection
-  (if (fnob "-HATCH") ; Check if command exists (ProgeCAD safety)
-    (progn
-      (command "-HATCH" "P" "SOLID" "S" lastEnt "" "")
-      ; Get the hatch entity and set its color explicitly
-      (setq hatchEnt (entlast))
-      (setq entData (entget hatchEnt))
-      ; Replace or add color code (62) with current color
-      (setq entData (subst (cons 62 (atoi currentColor)) (assoc 62 entData) entData))
-      ; If no color code exists, add it
-      (if (not (assoc 62 entData))
-        (setq entData (append entData (list (cons 62 (atoi currentColor)))))
-      )
-      (entmod entData)
-    )
-    ; Fallback for older CAD versions: Donut with 0 ID
-    (command "DONUT" 0.0 (* rad 2.0) cenPt "")
-  )
-)
-
-; Check if a command exists (Safety for ProgeCAD versions)
-(defun fnob (x) (if (getcname x) T nil))
 
 (princ "\nAuto Power Bus loaded. Type AUTOPOWERBUS to run.")
 (princ)

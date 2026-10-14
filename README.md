@@ -32,11 +32,7 @@ Blocks include attributes that define terminal locations for automated wiring:
 
 ### Dependencies
 
-Most scripts require `SmartJumper_Lib.lsp` to be loaded first:
-
-```lisp
-(load "SmartJumper_Lib.lsp")
-```
+Most scripts require `SmartJumper_Lib.lsp` to be loaded first. `ControlFreak.lsp` handles this, so load that one file rather than the individual scripts (see [Installation](#installation)).
 
 ### Available Commands
 
@@ -46,6 +42,8 @@ Most scripts require `SmartJumper_Lib.lsp` to be loaded first:
 | `DATALINE` | DataLineBus.lsp | DALI/DMX data bus wiring |
 | `AUTOINPUT` | AutoInputDevice.lsp | Input device placement and wiring |
 | `SMARTMLINE` | SmartMultiJumper.lsp | Draw parallel lines with auto-bridges |
+| `AUTOLAYOUT` | AutoLayout.lsp | Paper space layouts from frame blocks |
+| `CFBLOCKS` | ControlFreak.lsp | Import all product block definitions into the drawing |
 
 ---
 
@@ -54,6 +52,12 @@ Most scripts require `SmartJumper_Lib.lsp` to be loaded first:
 **File:** `SmartJumper_Lib.lsp`
 
 Core library that provides intelligent wire routing with automatic bridge detection. When a wire path crosses existing geometry, it automatically draws bridge arcs to indicate the crossing.
+
+- Crossing detection scans the whole current space (not just what's visible on screen) and skips frozen/off layers
+- Contacts at a wire's own start/end point (terminals, the bus it joins) are not bridged
+- All geometry is created in WCS, so results are the same whatever UCS is current
+- Terminal positions use the attribute's alignment point, so centred/right-justified terminal attributes work correctly
+- Also provides the shared drawing helpers (`cf:line`, `draw-junction-dot`, `cf:draw-bus`, `cf:att-point`) used by the other commands
 
 **Usage:** Load this file before using other scripts that depend on it.
 
@@ -72,6 +76,7 @@ Automatically wires power buses between selected blocks. Reads `PWR_POS` and `PW
 - Automatic bridge detection on negative risers
 - Junction dots at intermediate connections
 - Blocks sorted left-to-right automatically
+- Power terminals on the bottom of a block are routed round the block to the bus
 
 **Usage:**
 1. Load the script
@@ -93,6 +98,7 @@ Interactive DALI or DMX data bus wiring with per-device line selection.
 - DALI mode: 2-wire (Data+, Data-)
 - DMX mode: 3-wire (Data+, Data-, Shield)
 - Per-device line selection (1-4)
+- Terminals on the far side of a block from the bus (e.g. bottom terminals on a UBi) are routed round the outside of the block, each wire in its own lane so they never cross
 - Automatic bridge detection
 - Protocol-appropriate colors (white for DALI, white/green/brown for DMX)
 
@@ -118,14 +124,19 @@ Automatically places and wires input devices (switches) to a control block.
 - `M` = Momentary switch
 - `L` = Latching switch
 - `S` = Spare (skip)
-- `F` = Fanout (junction dot for connection to other devices)
+- `F` = Fanout (short labelled drop for connection to other devices)
 
 **Features:**
 - Reads `IN1`, `IN2`, `IN3`... attributes from control device
-- Places switches in columns (6 per column)
-- 3-segment wiring: vertical drop, 45-degree angle, horizontal to terminal
-- Ground bus for column 0 switches
+- IN1–6 placed in a column left of the device, IN7–12 in a column to the right
+- Rows ordered so no wires cross (left column: leftmost input on top; right column: rightmost on top)
+- Column positions and row spacing are worked out from the switch block's actual size
+- 3-segment wiring: vertical drop, 45-degree bend, horizontal to the switch terminal facing the device
+- The other switch terminal goes to a green ground bus on the outer side of each column
+- Imports the switch blocks from the product library if the drawing doesn't have them
 - Auto-fills remaining inputs as spares
+
+**Switch blocks** (`SWITCHM`, `SWITCHL`) need two attributes, `OUT` and `GND`, placed on the terminals (not "Constant" attributes).
 
 **Usage:**
 1. Load the script
@@ -137,7 +148,9 @@ Automatically places and wires input devices (switches) to a control block.
 **Configuration:** Edit constants at top of file to customize:
 - `BLOCK_MOMENTARY` / `BLOCK_LATCHING` - Block names for switches
 - `MAX_INPUTS_PER_COLUMN` - Switches per vertical stack (default: 6)
-- `SWITCH_SPACING_VERTICAL` - Spacing between switches (default: 20mm)
+- `SWITCH_SPACING_VERTICAL` / `SWITCH_GAP_VERTICAL` - Minimum row pitch (20mm) and clear gap between switches (5mm)
+- `COLUMN_GAP` - Clearance between the input wires and the switch columns (20mm)
+- `TOP_CLEARANCE` - Distance from the device's inputs down to the first row (60mm)
 
 ---
 
@@ -183,19 +196,29 @@ Draws multiple parallel lines between two points with automatic bridge arcs wher
 
 ## Installation
 
-1. Copy the `.lsp` files to your AutoCAD/ProgeCAD support folder, or a custom location
-2. Copy `Control Freak Product Blocks 2025.dwg` to your block library location
-3. Load scripts as needed:
+Keep the whole folder together anywhere you like (e.g. `C:\ControlFreak` or a shared drive). Nothing needs copying into the AutoCAD/ProgeCAD program folders.
 
-```lisp
-; Load the library first (required by most commands)
-(load "path/to/SmartJumper_Lib.lsp")
+### One-time setup
 
-; Then load the command you need
-(load "path/to/AutoPowerBus.lsp")
-```
+1. Type `APPLOAD`
+2. Add **`ControlFreak.lsp`** to the **Startup Suite** (AutoCAD: *Startup Suite → Contents… → Add*), so it loads in every drawing
+3. Load it once now (or drag `ControlFreak.lsp` onto the drawing)
 
-Or add to your `acaddoc.lsp` / `on_start.lsp` for automatic loading.
+The loader then:
+- Loads every script in the right order (library first)
+- Adds the folder to the **Support File Search Path** and, on AutoCAD, **Trusted Locations**, so there are no security prompts and it is found automatically next time
+- If it can't find its folder (e.g. the folder was moved), asks you to locate `ControlFreak.lsp` once
+
+To add a new script, drop it in the folder and add its name to `cf:*scripts*` at the top of `ControlFreak.lsp`.
+
+### Getting the product blocks into a drawing
+
+Type **`CFBLOCKS`**. Every block definition from `Control Freak Product Blocks 2025.dwg` is added to the current drawing without placing anything. Then use `INSERT` (or the Blocks palette) to place them.
+
+- Blocks the drawing already has are left unchanged, so `CFBLOCKS` is safe to run again
+- To use a newer library file, change `cf:*block-library*` at the top of `ControlFreak.lsp`
+
+AutoCAD users can also browse the library directly without importing: **Blocks palette → Libraries tab** (2020+) or **DesignCenter** (`ADCENTER`) → browse to the `.dwg` → *Blocks* → drag into the drawing.
 
 ## Compatibility
 
