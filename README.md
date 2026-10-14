@@ -1,232 +1,181 @@
 # CAD_ControlFreak
 
-CAD blocks and AutoLISP automation scripts for Control Freak lighting control products. Compatible with AutoCAD and ProgeCAD.
+CAD blocks and AutoLISP automation for Control Freak lighting control products. Type the system you want and the units are placed on a DIN rail, wired (power, DALI and DMX), framed and laid out ready to print.
 
-## CAD Blocks
+Developed and tested in **progeCAD 2026 Professional**; written to also run in AutoCAD (2018+), which hasn't been tested yet.
 
-The `Control Freak Product Blocks 2025.dwg` file contains schematic blocks for:
+## Quick start
 
-| Product | Quick Connect Pins | Description |
-|---------|-------------------|-------------|
-| eDIDIO S10 4 Pole | Yes | 4-pole lighting controller |
-| eDIDIO S10 6 Pole | Yes | 6-pole lighting controller |
-| UBi | Yes | Universal bus interface |
-| UBi Power | Yes | Powered universal bus interface |
-| DALI 0-10V V2 | Yes | DALI to 0-10V converter |
-| DALI 0-10V | Yes | DALI to 0-10V converter |
-| DMX Splitter | Yes | DMX signal splitter |
-| LIDA D | Yes | DALI driver |
-| SLAMMO V5 | No | LED driver (legacy) |
-| SLAMMO V6 | Yes | LED driver |
+1. Keep this folder together anywhere (e.g. `C:\ControlFreak` or a shared drive)
+2. `APPLOAD` → add **`ControlFreak.lsp`** to the Startup Suite, and load it once now (see [Installation](#installation))
+3. In a drawing, type **`CFBUILD`** and enter a system, e.g. `1 eDS10 4P, 2 UBi, 1 0-10V`
+4. Pick a point - the system is placed, wired and framed
+5. Type **`AUTOLAYOUT`** to make one A3 layout per frame, then `PUBLISH` to PDF
 
-### Block Attributes
+## Commands
 
-Blocks include attributes that define terminal locations for automated wiring:
+| Command | File | What it does |
+|---------|------|--------------|
+| `CFBUILD` | ControlFreak_Build.lsp | Type a system - places units on a DIN rail, wires power + data, adds frame and header |
+| `AUTOLAYOUT` | AutoLayout.lsp | One A3–A0 landscape layout per frame, ready to `PUBLISH` |
+| `AUTOPOWERBUS` | AutoPowerBus.lsp | Wire the power bus between selected blocks |
+| `DATALINE` | DataLineBus.lsp | Wire a DALI or DMX bus between clicked blocks |
+| `AUTOINPUT` | AutoInputDevice.lsp | Place and wire switches to a controller's inputs |
+| `SMARTMLINE` | SmartMultiJumper.lsp | Parallel lines with bridges where they cross |
+| `CFBLOCKS` | ControlFreak.lsp | Import all product blocks into the current drawing |
+| `CFDIAG` | ControlFreak_Diag.lsp | Check the setup and blocks, write a diagnostics report |
 
-- **Power terminals:** `PWR_POS`, `PWR_NEG`
-- **Data terminals:** `DA1+`, `DA1-`, `DA1G` (through DA4 for multi-line devices)
-- **Input terminals:** `IN1`, `IN2`, `IN3`... (for control devices)
-- **Output terminals:** `OUT`, `GND` (for switch blocks)
-
-## AutoLISP Scripts
-
-### Dependencies
-
-Most scripts require `SmartJumper_Lib.lsp` to be loaded first. `ControlFreak.lsp` handles this, so load that one file rather than the individual scripts (see [Installation](#installation)).
-
-### Available Commands
-
-| Command | Script | Description |
-|---------|--------|-------------|
-| `AUTOPOWERBUS` | AutoPowerBus.lsp | Automatic power bus wiring |
-| `DATALINE` | DataLineBus.lsp | DALI/DMX data bus wiring |
-| `AUTOINPUT` | AutoInputDevice.lsp | Input device placement and wiring |
-| `SMARTMLINE` | SmartMultiJumper.lsp | Draw parallel lines with auto-bridges |
-| `AUTOLAYOUT` | AutoLayout.lsp | Paper space layouts from frame blocks |
-| `CFBLOCKS` | ControlFreak.lsp | Import all product block definitions into the drawing |
+Load everything with `ControlFreak.lsp` - don't load the individual scripts.
 
 ---
 
-### SmartJumper Library
+## System Builder - `CFBUILD`
 
-**File:** `SmartJumper_Lib.lsp`
+Type the system, pick the bottom-left point, and it's built left to right: power supply, controller, then devices in the order typed.
 
-Core library that provides intelligent wire routing with automatic bridge detection. When a wire path crosses existing geometry, it automatically draws bridge arcs to indicate the crossing.
+```
+1 eDS10 4P, 2 UBi, 1 0-10V
+eDS10 4P, 2 UBi, SLAMMO
+eDS10 6P, 3 UBi, 2x LIDA D, HDR60
+eDS10 4P, 2 UBi, 2 UBi @DA2
+```
 
-- Crossing detection scans the whole current space (not just what's visible on screen) and skips frozen/off layers
-- Contacts at a wire's own start/end point (terminals, the bus it joins) are not bridged
-- All geometry is created in WCS, so results are the same whatever UCS is current
-- Terminal positions use the attribute's alignment point, so centred/right-justified terminal attributes work correctly
-- Also provides the shared drawing helpers (`cf:line`, `draw-junction-dot`, `cf:draw-bus`, `cf:att-point`) used by the other commands
+**Rules**
+- Items are comma-separated; quantity is optional (`2` or `2x`). Names ignore case, spaces and hyphens. Type `?` at the prompt to list every product and the names it accepts
+- Exactly one controller: `eDS10 4P` or `eDS10 6P`
+- A power supply is added (HDR30 by default) unless you list one: `HDR15`, `HDR30`, `HDR60`
+- DALI devices (UBi, UBi Power, 0-10V, LIDA D) go on controller **DA1**, DMX devices (SLAMMO, DMX Splitter) on **DA2**. Add `@DAn` to an item to use another controller line
+- Each device connects with its own data line 1 (e.g. UBi line 1 = in)
 
-**Usage:** Load this file before using other scripts that depend on it.
+**What it draws**
+- A 35mm DIN rail behind the units (layer `CF-DINRAIL`; wires don't bridge over it)
+- Power bus (red +, blue -), then one data bus per controller line above it, with bridges where wires cross. Terminals on the bottom of a unit are routed round it
+- `FRAME_BLOCK` around everything at the smallest scale that fits (1 = A3 at 1:1, then 1.25, 1.5, 2, 2.5…), with `CF_HEADER` at real size in a free corner (top-right first)
+- The frame's `DATE` is filled in; `DRAWING_NUMBER`, `TITLE`, `AUTHOR` and `VERSION` are left for you to edit (double-click the frame)
 
----
+One `U` undoes the whole build. Missing blocks are imported from the product library automatically.
 
-### Auto Power Bus
-
-**File:** `AutoPowerBus.lsp`
-**Command:** `AUTOPOWERBUS`
-**Depends on:** SmartJumper_Lib.lsp
-
-Automatically wires power buses between selected blocks. Reads `PWR_POS` and `PWR_NEG` attributes to locate terminals.
-
-**Features:**
-- Red positive bus, blue negative bus
-- Automatic bridge detection on negative risers
-- Junction dots at intermediate connections
-- Blocks sorted left-to-right automatically
-- Power terminals on the bottom of a block are routed round the block to the bus
-
-**Usage:**
-1. Load the script
-2. Type `AUTOPOWERBUS`
-3. Select blocks to wire together
-4. Power buses are drawn automatically
+**Configuration** (top of `ControlFreak_Build.lsp`): default power supply and controller lines, gap between units (25mm), DIN rail position, frame margins/scales/outline, and `cfb:*catalog*` - the product list (display name, block name, DALI/DMX, accepted names). Add new products there.
 
 ---
 
-### Data Line Bus
+## Auto Layout - `AUTOLAYOUT`
 
-**File:** `DataLineBus.lsp`
-**Command:** `DATALINE`
-**Depends on:** SmartJumper_Lib.lsp
+Creates one paper space layout per `FRAME_BLOCK` in model space, so `PUBLISH` gives one PDF page per frame.
 
-Interactive DALI or DMX data bus wiring with per-device line selection.
+- Asks for paper size - **A3** (default), A2, A1 or A0, always landscape - and whether to **Skip** or **Replace** frames that already have a layout (Skip = only add new sheets)
+- Layout named from the frame's `DRAWING_NUMBER`, else `TITLE`, else "Sheet n" (duplicates become "Name (2)")
+- One locked viewport filling the sheet, centred on the frame, at the scale that fits the frame to the paper
+- Print settings: copied from a page setup named `CF_A3` (`CF_A2`…) if the drawing has one; otherwise it picks a printer that offers the paper size (PDF printers first) and sets landscape, plot area Layout and fit to paper. The report shows the printer and paper used
 
-**Features:**
-- DALI mode: 2-wire (Data+, Data-)
-- DMX mode: 3-wire (Data+, Data-, Shield)
-- Per-device line selection (1-4)
-- Terminals on the far side of a block from the bus (e.g. bottom terminals on a UBi) are routed round the outside of the block, each wire in its own lane so they never cross
-- Automatic bridge detection
-- Protocol-appropriate colors (white for DALI, white/green/brown for DMX)
+**Tip:** for consistent PDFs, save your preferred PDF / A3 / landscape / fit-to-paper settings as a page setup named `CF_A3` in your template.
 
-**Usage:**
-1. Load the script
-2. Type `DATALINE`
-3. Select protocol (DALI or DMX)
-4. Click reference point for bus height
-5. Click each device and specify which data line (1-4)
-6. Press Enter when finished
+**Configuration** (top of `AutoLayout.lsp`): frame block name and outline, viewport layer (`Defpoints`), page setup prefix, paper sizes.
 
 ---
 
-### Auto Input Device
+## Wiring commands
 
-**File:** `AutoInputDevice.lsp`
-**Command:** `AUTOINPUT`
-**Depends on:** SmartJumper_Lib.lsp
+These are used by `CFBUILD` and can also be run on their own.
 
-Automatically places and wires input devices (switches) to a control block.
+### `AUTOPOWERBUS`
+Select blocks → wires a red positive and blue negative bus across every block with `PWR_POS` / `PWR_NEG`. Bus span and junction dots come from the terminal positions; negative risers bridge over the positive bus; bottom terminals are routed round the block.
 
-**Input Types:**
-- `M` = Momentary switch
-- `L` = Latching switch
-- `S` = Spare (skip)
-- `F` = Fanout (short labelled drop for connection to other devices)
+### `DATALINE`
+Choose DALI (2-wire, white) or DMX (3-wire: white / green / brown shield), click a reference point for the bus height, then click each device and give its data line (1–6). Click order doesn't matter. Terminals on the far side of a block from the bus are routed round it, each wire in its own lane so they never cross.
 
-**Features:**
-- Reads `IN1`, `IN2`, `IN3`... attributes from control device
-- IN1–6 placed in a column left of the device, IN7–12 in a column to the right
-- Rows ordered so no wires cross (left column: leftmost input on top; right column: rightmost on top)
-- Column positions and row spacing are worked out from the switch block's actual size
-- 3-segment wiring: vertical drop, 45-degree bend, horizontal to the switch terminal facing the device
-- The other switch terminal goes to a green ground bus on the outer side of each column
-- Imports the switch blocks from the product library if the drawing doesn't have them
-- Auto-fills remaining inputs as spares
+### `AUTOINPUT`
+Select a controller, enter input types (`M` momentary, `L` latching, `S` spare, `F` fanout), e.g. `M M L S F M`. Switches are placed in a column left of the device (IN1–6) and right of it (IN7–12), ordered so no wires cross, sized from the switch block, each wired vertical → 45° → horizontal, with a green ground bus on the outer side of each column. Switch blocks (`SWITCHM`, `SWITCHL`) are imported if missing. Settings (block names, spacing, clearances) are at the top of `AutoInputDevice.lsp`.
 
-**Switch blocks** (`SWITCHM`, `SWITCHL`) need two attributes, `OUT` and `GND`, placed on the terminals (not "Constant" attributes).
+### `SMARTMLINE`
+Enter number of lines, spacing and bridge radius, then click start and end - draws parallel lines with bridge arcs where they cross existing geometry.
 
-**Usage:**
-1. Load the script
-2. Type `AUTOINPUT`
-3. Select control device block
-4. Enter input types (e.g., `M M L S F M`)
-5. Switches are placed and wired automatically
-
-**Configuration:** Edit constants at top of file to customize:
-- `BLOCK_MOMENTARY` / `BLOCK_LATCHING` - Block names for switches
-- `MAX_INPUTS_PER_COLUMN` - Switches per vertical stack (default: 6)
-- `SWITCH_SPACING_VERTICAL` / `SWITCH_GAP_VERTICAL` - Minimum row pitch (20mm) and clear gap between switches (5mm)
-- `COLUMN_GAP` - Clearance between the input wires and the switch columns (20mm)
-- `TOP_CLEARANCE` - Distance from the device's inputs down to the first row (60mm)
+### Wiring library - `SmartJumper_Lib.lsp`
+Shared engine for the commands above:
+- Bridge detection scans the whole current space (not just what's on screen), skips frozen/off layers and the layers in `cf:*ignore-layers*` (`CF-DINRAIL`), and ignores contacts at a wire's own ends
+- Draws in WCS, so the current UCS doesn't matter
+- Terminal positions use each attribute's alignment point, so justified attributes work
+- Helpers: `cf:line`, `cf:arc`, `draw-junction-dot`, `cf:att-point`, `cf:draw-bus`, `cf:device-routes`, `cf:bbox`, `cf:block-extents`
+- Non-interactive cores used by `CFBUILD`: `cf:wire-power` (AutoPowerBus.lsp), `cf:wire-data` (DataLineBus.lsp)
 
 ---
 
-### Auto Layout
+## Diagnostics - `CFDIAG`
 
-**File:** `AutoLayout.lsp`
-**Command:** `AUTOLAYOUT`
+Writes `ControlFreak_Diagnostics.txt` next to the drawing (or to the temp folder if unsaved), opens it in Notepad and lists any issues on the command line.
 
-Generates paper space layouts from frame blocks in model space.
+- **Select blocks** to check those inserts and their definitions, or **press Enter** to check every block in the drawing
+- **Setup:** CAD version, tools folder, support/trusted paths, block library, wiring library version, which commands are loaded
+- **Each block:** size, every terminal the scripts recognise with its position from the base point and top/bottom side, other attributes, dynamic block properties (where the CAD allows)
+- **Problems flagged:** Constant attributes (invisible to the scripts), duplicate tags, half pairs (e.g. `DA2+` without `DA2-`), gaps in input numbering, misspelt terminal tags, rotated or mirrored inserts, inserts missing attributes added to the block later (run `ATTSYNC`)
 
-**Features:**
-- Finds all `FRAME_BLOCK` instances in drawing
-- Creates named layout for each frame (from `DRAWING_NUMBER` attribute)
-- Creates viewport matching frame geometry
-- Handles rotation and scale
-- Syncs attributes to paper space title block
-
-**Configuration:** Edit settings at top of file:
-- `msBlockName` - Model space frame block name (default: `FRAME_BLOCK`)
-- `psBlockName` - Paper space title block name (default: `TITLE_BLOCK_A3`)
-- `vPortLayer` - Viewport layer (default: `Defpoints`)
+Paste the report when asking for help - it shows block names, terminal tags and setup in one go.
 
 ---
 
-### Smart Multi-Jumper
+## Product blocks
 
-**File:** `SmartMultiJumper.lsp`
-**Command:** `SMARTMLINE`
-**Depends on:** SmartJumper_Lib.lsp
+`Control Freak Product Blocks.dwg` holds every block. `CFBLOCKS` (or `CFBUILD`) imports them into a drawing.
 
-Draws multiple parallel lines between two points with automatic bridge arcs where they cross existing geometry.
+| Product | Block | Bus | Terminals |
+|---------|-------|-----|-----------|
+| eDIDIO S10 4 Pole (eDS10 4P) | `CF_EDIDIO_4P` | Controller | Power, DA1–2 (with shield), IN1–12 |
+| eDIDIO S10 6 Pole (eDS10 6P) | `CF_EDIDIO_6P` | Controller | Power, DA1–4 (with shield), IN1–18 |
+| UBi | `CF_UBI_TEST` | DALI | DA lines top and bottom (all joined internally) |
+| UBi Power | `CF_UBI_POWER` | DALI | Power, DA1–2 top, DA3–5 bottom |
+| DALI 0-10V V2 | `CF_DALI_0_10_V2` | DALI | Power, DA1 (bottom) |
+| DALI 0-10V | `CF_DALI_0_10` | DALI | Power, DA1 (bottom) |
+| LIDA D | `CF_LIDA_D` | DALI | Power, DA1 |
+| SLAMMO V6 | `CF_SLAMMO_V6` | DMX | Power, DA1 (with shield) |
+| SLAMMO V5 IP67 | `CF_SLAMMO_V5_IP67` | - | No terminals (legacy) |
+| DMX Splitter | `CF_DMX_SPLITTER` | DMX | Power, DA1–2 top, DA3–6 bottom (with shield) |
+| HDR15 / HDR30 / HDR60 | `ADM_HDR15-24` / `ADM_HDR30-24` / `ADM_HDR60-24` | Power supply | Power |
+| Momentary / latching switch | `SWITCHM` / `SWITCHL` | Inputs | `OUT`, `GND` |
+| Frame (A3, base point at centre) | `FRAME_BLOCK` | - | `DRAWING_NUMBER`, `TITLE`, `AUTHOR`, `DATE`, `VERSION` |
+| Header (logo) | `CF_HEADER` | - | - |
+| DIN rail | `DIN_Rail_Dynamic` | - | Not used by `CFBUILD` (it draws its own rail) |
 
-**Usage:**
-1. Load the script
-2. Type `SMARTMLINE`
-3. Enter number of connections (default: 2)
-4. Enter offset spacing in mm (default: 5.0)
-5. Enter bridge radius (default: 2.0)
-6. Click start point
-7. Click end point
+### Terminal attributes
+
+The scripts find terminals by attribute tag. Attributes must sit exactly on the terminal and must **not** be Constant.
+
+- **Power:** `PWR_POS`, `PWR_NEG`
+- **Data:** `DAn+`, `DAn-`, and `DAnG` (shield, DMX) for lines 1–9
+- **Inputs:** `IN1`, `IN2`… (controllers)
+- **Switches:** `OUT`, `GND`
+
+Run `CFDIAG` after editing a block to check its terminals.
 
 ---
 
 ## Installation
 
-Keep the whole folder together anywhere you like (e.g. `C:\ControlFreak` or a shared drive). Nothing needs copying into the AutoCAD/ProgeCAD program folders.
+Keep the whole folder together anywhere you like. Nothing is copied into the CAD program folders.
 
 ### One-time setup
 
 1. Type `APPLOAD`
-2. Add **`ControlFreak.lsp`** to the **Startup Suite** (AutoCAD: *Startup Suite → Contents… → Add*), so it loads in every drawing
+2. Add **`ControlFreak.lsp`** to the **Startup Suite** so it loads in every drawing
 3. Load it once now (or drag `ControlFreak.lsp` onto the drawing)
 
-The loader then:
-- Loads every script in the right order (library first)
-- Adds the folder to the **Support File Search Path** and, on AutoCAD, **Trusted Locations**, so there are no security prompts and it is found automatically next time
-- If it can't find its folder (e.g. the folder was moved), asks you to locate `ControlFreak.lsp` once
+The loader:
+- Loads every script in the right order (library first) and lists the commands
+- Remembers its folder (registry), and on AutoCAD also adds it to the Support File Search Path and Trusted Locations. progeCAD doesn't allow the search path to be changed from LISP; that's fine - the saved location is used (add the folder under Options → Files if you want it on the path)
+- If the folder has moved, asks you to locate `ControlFreak.lsp` once
 
-To add a new script, drop it in the folder and add its name to `cf:*scripts*` at the top of `ControlFreak.lsp`.
+To add a script, put it in the folder and add its name to `cf:*scripts*` at the top of `ControlFreak.lsp`.
 
-### Getting the product blocks into a drawing
+### Product blocks in a drawing
 
-Type **`CFBLOCKS`**. Every block definition from `Control Freak Product Blocks 2025.dwg` is added to the current drawing without placing anything. Then use `INSERT` (or the Blocks palette) to place them.
+`CFBLOCKS` adds every block definition from the library without placing anything; then use `INSERT`. Blocks already in the drawing are left unchanged, so it's safe to run again - but it won't update a block that has since changed in the library. The library file name is set in `cf:*block-library*` (`ControlFreak.lsp`).
 
-- Blocks the drawing already has are left unchanged, so `CFBLOCKS` is safe to run again
-- To use a newer library file, change `cf:*block-library*` at the top of `ControlFreak.lsp`
+---
 
-AutoCAD users can also browse the library directly without importing: **Blocks palette → Libraries tab** (2020+) or **DesignCenter** (`ADCENTER`) → browse to the `.dwg` → *Blocks* → drag into the drawing.
+## Known limitations
 
-## Compatibility
-
-- AutoCAD 2018+
-- ProgeCAD 2020+
-
-Scripts include safety checks for ProgeCAD compatibility (command existence verification).
-
-## Work in Progress
-
-This repository is actively being developed. More blocks and automation scripts will be added over time.
+- **SLAMMO power:** `CFBUILD` puts SLAMMOs on the HDR power bus, but they usually need their own LED supply
+- **DMX Splitter:** devices aren't yet wired to the Splitter's outputs - all DMX devices share one bus from the controller
+- **`AUTOINPUT`:** lays out up to 12 inputs (the eDS10 6P has 18)
+- **Rotated or mirrored blocks** aren't supported by the routing (`CFDIAG` flags them)
+- **Block fixes needed:** `CF_EDIDIO_6P` has `DA2+` twice (the second should be `DA3+`); `CF_UBI_TEST` is missing one top data pair
+- **progeCAD:** dynamic block properties can't be read or set from LISP, so dynamic blocks are used at their default size

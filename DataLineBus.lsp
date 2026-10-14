@@ -2,16 +2,15 @@
 ; DATA LINE BUS WIRING (Using SmartJumper Library)
 ; Interactive data bus wiring (DALI/DMX) with per-device line selection
 ; User clicks devices and specifies which line for EACH device
+;
+; Command: DATALINE
+; Core:    (cf:wire-data devices protocol refHeight) - no prompts, used by CFBUILD
 ; ============================================================================
 
 (vl-load-com)
 
-(defun c:dataline ( / *error* protocol refPt refHeight dataPlusBusY dataMinusBusY
-                      shieldBusY ColPlus ColMinus ColShield BrRad DotRad
-                      dataPlusList dataMinusList shieldList p1 ss blk deviceLine
-                      daPlusAttr daMinusAttr daShieldAttr daPlusPos daMinusPos daShieldPos
-                      deviceCount plusDots minusDots shieldDots
-                      deviceBlocks routes plusRoutes minusRoutes shieldRoutes i)
+(defun c:dataline ( / *error* protocol refPt refHeight devices p1 ss blk deviceLine
+                      daPlusAttr daMinusAttr daShieldAttr)
 
   ; --- CHECK DEPENDENCY ---
   (if (not smart-wire)
@@ -20,10 +19,6 @@
       (exit)
     )
   )
-
-  ; --- CONFIGURATION CONSTANTS ---
-  (setq BrRad 2.0)      ; Bridge radius
-  (setq DotRad 1.0)     ; Junction dot radius
 
   ; --- ERROR HANDLER ---
   (defun *error* (msg)
@@ -43,43 +38,11 @@
   (setq refPt (getpoint))
   (if (not refPt) (exit))
   (setq refHeight (cadr (trans refPt 1 0)))  ; Y in WCS (picked point is in UCS)
-
   (princ (strcat "\nReference height: " (rtos refHeight 2 2) " mm"))
 
-  ; 3. CALCULATE BUS HEIGHTS AND COLORS BASED ON PROTOCOL
-  (if (= protocol "DMX")
-    (progn
-      ; DMX: 3-wire system (bottom to top: Shield, Data-, Data+)
-      (setq shieldBusY (+ refHeight 5.0))       ; Shield at Ref + 5mm
-      (setq dataMinusBusY (+ refHeight 10.0))   ; Data- at Ref + 10mm
-      (setq dataPlusBusY (+ refHeight 15.0))    ; Data+ at Ref + 15mm
-      (setq ColShield 34)                       ; Brown
-      (setq ColMinus 3)                         ; Green
-      (setq ColPlus 7)                          ; White
-      (princ (strcat "\nDMX Shield bus at: " (rtos shieldBusY 2 2) " mm (brown)"))
-      (princ (strcat "\nDMX Data- bus at: " (rtos dataMinusBusY 2 2) " mm (green)"))
-      (princ (strcat "\nDMX Data+ bus at: " (rtos dataPlusBusY 2 2) " mm (white)"))
-    )
-    (progn
-      ; DALI: 2-wire system (bottom to top: Data+, Data-)
-      (setq shieldBusY nil)                     ; No shield
-      (setq dataPlusBusY (+ refHeight 5.0))     ; Data+ at Ref + 5mm
-      (setq dataMinusBusY (+ refHeight 10.0))   ; Data- at Ref + 10mm
-      (setq ColPlus 7)                          ; White
-      (setq ColMinus 7)                         ; White
-      (princ (strcat "\nDALI Data+ bus at: " (rtos dataPlusBusY 2 2) " mm (white)"))
-      (princ (strcat "\nDALI Data- bus at: " (rtos dataMinusBusY 2 2) " mm (white)"))
-    )
-  )
-
-  ; 4. COLLECT DEVICES AND TERMINALS (PER-DEVICE LINE SELECTION)
+  ; 3. COLLECT DEVICES (PER-DEVICE LINE SELECTION)
   ; Click order does not matter - bus spans and junction dots are
   ; worked out from terminal positions when drawing
-  (setq dataPlusList '())
-  (setq dataMinusList '())
-  (setq shieldList '())
-  (setq deviceCount 0)
-
   (setq p1 (getpoint "\nClick device #1 (or press Enter to finish): "))
 
   (while p1
@@ -89,117 +52,143 @@
       (progn
         (setq blk (ssname ss 0))
 
-        ; PROMPT FOR LINE NUMBER FOR THIS DEVICE
-        (initget 1 "1 2 3 4")  ; Require valid response
-        (setq deviceLine (getint "\nWhich data line for this device (1-4): "))
+        (initget 1 "1 2 3 4 5 6")  ; Require valid response
+        (setq deviceLine (getint "\nWhich data line for this device (1-6): "))
 
-        ; Build attribute names based on THIS device's line selection
         (setq daPlusAttr (strcat "DA" (itoa deviceLine) "+"))
         (setq daMinusAttr (strcat "DA" (itoa deviceLine) "-"))
-        (setq daShieldAttr (strcat "DA" (itoa deviceLine) "G"))  ; G for ground/shield
+        (setq daShieldAttr (strcat "DA" (itoa deviceLine) "G"))
 
-        ; Find attribute positions
-        (setq daPlusPos (find-data-attribute blk daPlusAttr))
-        (setq daMinusPos (find-data-attribute blk daMinusAttr))
-
-        ; For DMX, also find shield
-        (if (= protocol "DMX")
-          (setq daShieldPos (find-data-attribute blk daShieldAttr))
-          (setq daShieldPos nil)
-        )
-
-        ; Validate based on protocol
-        (if (= protocol "DMX")
-          ; DMX requires all 3 wires
-          (if (and daPlusPos daMinusPos daShieldPos)
-            (progn
-              (setq dataPlusList (append dataPlusList (list daPlusPos)))
-              (setq dataMinusList (append dataMinusList (list daMinusPos)))
-              (setq shieldList (append shieldList (list daShieldPos)))
-              (setq deviceBlocks (append deviceBlocks (list blk)))
-              (setq deviceCount (1+ deviceCount))
-              (princ (strcat "\n  Found " daPlusAttr ", " daMinusAttr ", " daShieldAttr))
-            )
-            (princ (strcat "\n  Warning: DMX requires " daPlusAttr "/" daMinusAttr "/" daShieldAttr))
+        ; Check now so the user can re-pick straight away
+        (if (and (find-data-attribute blk daPlusAttr)
+                 (find-data-attribute blk daMinusAttr)
+                 (or (/= protocol "DMX") (find-data-attribute blk daShieldAttr)))
+          (progn
+            (setq devices (append devices (list (list blk deviceLine))))
+            (princ (strcat "\n  Found data line " (itoa deviceLine)))
           )
-          ; DALI requires only 2 wires
-          (if (and daPlusPos daMinusPos)
-            (progn
-              (setq dataPlusList (append dataPlusList (list daPlusPos)))
-              (setq dataMinusList (append dataMinusList (list daMinusPos)))
-              (setq deviceBlocks (append deviceBlocks (list blk)))
-              (setq deviceCount (1+ deviceCount))
-              (princ (strcat "\n  Found " daPlusAttr " and " daMinusAttr))
-            )
-            (princ (strcat "\n  Warning: " daPlusAttr "/" daMinusAttr " not found on this device"))
-          )
+          (princ (strcat "\n  Warning: " daPlusAttr "/" daMinusAttr
+                         (if (= protocol "DMX") (strcat "/" daShieldAttr) "")
+                         " not found on this device"))
         )
       )
       (princ "\n  Warning: No block found at click point")
     )
 
     (setq p1 (getpoint (strcat "\nClick device #"
-                               (itoa (1+ deviceCount))
+                               (itoa (1+ (length devices)))
                                " (or press Enter to finish): ")))
   )
 
-  ; Validate we have enough devices
-  (if (< deviceCount 2)
-    (progn
-      (princ "\nNeed at least 2 devices.")
-      (exit)
-    )
+  (if (< (length devices) 2)
+    (progn (princ "\nNeed at least 2 devices.") (exit))
   )
 
-  ; Route each device's wires: terminals facing the buses get a straight
-  ; riser, terminals on the far side of the block go round it
-  (setq i 0)
-  (foreach blk deviceBlocks
-    (setq routes (cf:device-routes blk
-                   (if (= protocol "DMX")
-                     (list (nth i dataPlusList) (nth i dataMinusList) (nth i shieldList))
-                     (list (nth i dataPlusList) (nth i dataMinusList)))
-                   (list dataPlusBusY dataMinusBusY shieldBusY)))
-    (setq plusRoutes  (append plusRoutes  (list (car routes))))
-    (setq minusRoutes (append minusRoutes (list (cadr routes))))
-    (if (= protocol "DMX")
-      (setq shieldRoutes (append shieldRoutes (list (caddr routes))))
-    )
-    (setq i (1+ i))
+  (if (cf:wire-data devices protocol refHeight)
+    (princ "\nData Line Bus Complete.")
   )
-
-  ; -----------------------------------------------------------
-  ; PHASE 1: DATA+ BUS WITH SMART BRIDGES (White for DALI and DMX)
-  ; -----------------------------------------------------------
-  (princ "\nDrawing Data+ Bus...")
-  (setq plusDots (cf:draw-bus plusRoutes dataPlusBusY ColPlus T BrRad))
-
-  ; -----------------------------------------------------------
-  ; PHASE 2: DATA- BUS WITH SMART BRIDGES (White for DALI, Green for DMX)
-  ; -----------------------------------------------------------
-  (princ "\nDrawing Data- Bus...")
-  (setq minusDots (cf:draw-bus minusRoutes dataMinusBusY ColMinus T BrRad))
-
-  ; -----------------------------------------------------------
-  ; PHASE 3: SHIELD BUS WITH SMART BRIDGES (DMX ONLY, Brown)
-  ; -----------------------------------------------------------
-  (if (= protocol "DMX")
-    (progn
-      (princ "\nDrawing Shield Bus...")
-      (setq shieldDots (cf:draw-bus shieldRoutes shieldBusY ColShield T BrRad))
-    )
-  )
-
-  ; -----------------------------------------------------------
-  ; PHASE 4: JUNCTION DOTS (PROTOCOL-AWARE)
-  ; -----------------------------------------------------------
-  (princ "\nAdding Junction Dots...")
-  (foreach pt plusDots   (draw-junction-dot pt DotRad ColPlus))
-  (foreach pt minusDots  (draw-junction-dot pt DotRad ColMinus))
-  (foreach pt shieldDots (draw-junction-dot pt DotRad ColShield))
-
-  (princ "\nData Line Bus Complete.")
   (princ)
+)
+
+; ============================================================================
+; CORE: Wire one data bus
+;   devices   - ((blockEnt lineNumber) ...)
+;   protocol  - "DALI" (Data+, Data-) or "DMX" (Data+, Data-, Shield)
+;   refHeight - buses are drawn 5mm / 10mm (/ 15mm) above this Y
+; Returns the Y of the top bus, or nil if fewer than 2 devices could be wired
+; ============================================================================
+(defun cf:wire-data (devices protocol refHeight / dataPlusBusY dataMinusBusY shieldBusY
+                       ColPlus ColMinus ColShield BrRad DotRad dmx n plusPos minusPos shieldPos
+                       deviceBlocks plusList minusList shieldList routes i
+                       plusRoutes minusRoutes shieldRoutes plusDots minusDots shieldDots)
+
+  (setq BrRad 2.0)      ; Bridge radius
+  (setq DotRad 1.0)     ; Junction dot radius
+  (setq dmx (= protocol "DMX"))
+
+  ; BUS HEIGHTS AND COLOURS BASED ON PROTOCOL
+  (if dmx
+    (progn
+      ; DMX: 3-wire system (bottom to top: Shield, Data-, Data+)
+      (setq shieldBusY (+ refHeight 5.0))
+      (setq dataMinusBusY (+ refHeight 10.0))
+      (setq dataPlusBusY (+ refHeight 15.0))
+      (setq ColShield 34)                       ; Brown
+      (setq ColMinus 3)                         ; Green
+      (setq ColPlus 7)                          ; White
+    )
+    (progn
+      ; DALI: 2-wire system (bottom to top: Data+, Data-)
+      (setq dataPlusBusY (+ refHeight 5.0))
+      (setq dataMinusBusY (+ refHeight 10.0))
+      (setq ColPlus 7)                          ; White
+      (setq ColMinus 7)                         ; White
+    )
+  )
+
+  ; FIND EACH DEVICE'S TERMINALS FOR ITS LINE
+  (foreach dev devices
+    (setq n (itoa (cadr dev)))
+    (setq plusPos   (find-data-attribute (car dev) (strcat "DA" n "+")))
+    (setq minusPos  (find-data-attribute (car dev) (strcat "DA" n "-")))
+    (setq shieldPos (if dmx (find-data-attribute (car dev) (strcat "DA" n "G"))))
+    (if (and plusPos minusPos (or (not dmx) shieldPos))
+      (progn
+        (setq deviceBlocks (append deviceBlocks (list (car dev))))
+        (setq plusList (append plusList (list plusPos)))
+        (setq minusList (append minusList (list minusPos)))
+        (if dmx (setq shieldList (append shieldList (list shieldPos))))
+      )
+      (princ (strcat "\n  Warning: data line " n " terminals not found on "
+                     (cdr (assoc 2 (entget (car dev)))) " - skipped"))
+    )
+  )
+
+  (if (< (length deviceBlocks) 2)
+    (progn
+      (princ (strcat "\n" protocol ": need at least 2 devices to wire."))
+      nil
+    )
+    (progn
+      ; Route each device's wires: terminals facing the buses get a straight
+      ; riser, terminals on the far side of the block go round it
+      (setq i 0)
+      (foreach blk deviceBlocks
+        (setq routes (cf:device-routes blk
+                       (if dmx
+                         (list (nth i plusList) (nth i minusList) (nth i shieldList))
+                         (list (nth i plusList) (nth i minusList)))
+                       (list dataPlusBusY dataMinusBusY shieldBusY)))
+        (setq plusRoutes  (append plusRoutes  (list (car routes))))
+        (setq minusRoutes (append minusRoutes (list (cadr routes))))
+        (if dmx (setq shieldRoutes (append shieldRoutes (list (caddr routes)))))
+        (setq i (1+ i))
+      )
+
+      ; PHASE 1: DATA+ BUS WITH SMART BRIDGES (White for DALI and DMX)
+      (princ (strcat "\nDrawing " protocol " Data+ Bus..."))
+      (setq plusDots (cf:draw-bus plusRoutes dataPlusBusY ColPlus T BrRad))
+
+      ; PHASE 2: DATA- BUS WITH SMART BRIDGES (White for DALI, Green for DMX)
+      (princ (strcat "\nDrawing " protocol " Data- Bus..."))
+      (setq minusDots (cf:draw-bus minusRoutes dataMinusBusY ColMinus T BrRad))
+
+      ; PHASE 3: SHIELD BUS WITH SMART BRIDGES (DMX ONLY, Brown)
+      (if dmx
+        (progn
+          (princ "\nDrawing DMX Shield Bus...")
+          (setq shieldDots (cf:draw-bus shieldRoutes shieldBusY ColShield T BrRad))
+        )
+      )
+
+      ; PHASE 4: JUNCTION DOTS
+      (foreach pt plusDots   (draw-junction-dot pt DotRad ColPlus))
+      (foreach pt minusDots  (draw-junction-dot pt DotRad ColMinus))
+      (foreach pt shieldDots (draw-junction-dot pt DotRad ColShield))
+
+      (max dataPlusBusY dataMinusBusY)
+    )
+  )
 )
 
 ; ============================================================================

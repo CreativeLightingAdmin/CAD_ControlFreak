@@ -12,7 +12,17 @@
 (vl-load-com)
 
 ; --- CONFIGURATION ----------------------------------------------------------
-(setq cf:*block-library* "Control Freak Product Blocks 2025.dwg")
+(setq cf:*block-library* "Control Freak Product Blocks.dwg")
+; Older file names still accepted if the library hasn't been renamed
+(setq cf:*block-library-old* '("Control Freak Product Blocks 2025.dwg"))
+
+; Full path of the block library, or nil
+(defun cf:block-library-path ()
+  (if cf:*root*
+    (vl-some '(lambda (n) (findfile (strcat cf:*root* "\\" n)))
+             (cons cf:*block-library* cf:*block-library-old*))
+  )
+)
 
 ; Load order matters: the library must come first
 (setq cf:*scripts* '("SmartJumper_Lib.lsp"
@@ -20,7 +30,9 @@
                      "DataLineBus.lsp"
                      "AutoInputDevice.lsp"
                      "SmartMultiJumper.lsp"
-                     "AutoLayout.lsp"))
+                     "AutoLayout.lsp"
+                     "ControlFreak_Diag.lsp"
+                     "ControlFreak_Build.lsp"))
 
 (setq cf:*reg-key* "HKEY_CURRENT_USER\\Software\\ControlFreak")
 
@@ -59,22 +71,46 @@
   )
 )
 
+; Support File Search Path as a string, or nil if it can't be read.
+; AutoCAD exposes it through Preferences > Files; progeCAD/IntelliCAD
+; doesn't, but keeps it in the SRCHPATH system variable instead.
+(defun cf:get-support-path ( / res)
+  (setq res (vl-catch-all-apply
+              '(lambda () (vla-get-supportpath
+                            (vla-get-files (vla-get-preferences (vlax-get-acad-object)))))))
+  (if (= (type res) 'STR)
+    res
+    (progn
+      (setq res (vl-catch-all-apply 'getvar (list "SRCHPATH")))
+      (if (= (type res) 'STR) res)
+    )
+  )
+)
+
+; Sets the support path using whichever method this CAD supports
+(defun cf:set-support-path (newPath / res)
+  (setq res (vl-catch-all-apply
+              '(lambda () (vla-put-supportpath
+                            (vla-get-files (vla-get-preferences (vlax-get-acad-object)))
+                            newPath))))
+  (if (vl-catch-all-error-p res)
+    (vl-catch-all-apply 'setvar (list "SRCHPATH" newPath))
+  )
+)
+
 ; Remember the folder so other drawings/sessions find it without asking
-(defun cf:register-root (dir / files cur trusted)
+(defun cf:register-root (dir / cur trusted)
   (vl-registry-write cf:*reg-key* "Path" dir)
 
   ; Support File Search Path (persists in the current profile)
-  (vl-catch-all-apply
-    '(lambda ()
-       (setq files (vla-get-files (vla-get-preferences (vlax-get-acad-object))))
-       (setq cur (vla-get-supportpath files))
-       (if (not (cf:path-in-list-p dir cur))
-         (progn
-           (vla-put-supportpath files (strcat cur ";" dir))
-           (princ (strcat "\nControl Freak: added to support path: " dir))
-         )
-       )
-     )
+  (setq cur (cf:get-support-path))
+  (if (and cur (not (cf:path-in-list-p dir cur)))
+    (if (progn
+          (cf:set-support-path (if (= cur "") dir (strcat cur ";" dir)))
+          (cf:path-in-list-p dir (cf:get-support-path)))   ; re-read to confirm
+      (princ (strcat "\nControl Freak: added to support path: " dir))
+      (princ "\nControl Freak: couldn't add the folder to the support path (using saved location instead).")
+    )
   )
 
   ; Trusted Locations (AutoCAD 2014+; stops the SECURELOAD warning)
@@ -105,7 +141,7 @@
     (princ)
   )
 
-  (setq lib (if cf:*root* (findfile (strcat cf:*root* "\\" cf:*block-library*))))
+  (setq lib (cf:block-library-path))
   (if (not lib)
     (progn
       (alert (strcat "Block library not found:\n" (if cf:*root* cf:*root* "?") "\\" cf:*block-library*))
@@ -195,7 +231,7 @@
         )
       )
       (princ "\n\n--- Control Freak tools loaded ---")
-      (princ "\n  AUTOPOWERBUS  DATALINE  AUTOINPUT  SMARTMLINE  AUTOLAYOUT  CFBLOCKS")
+      (princ "\n  AUTOPOWERBUS  DATALINE  AUTOINPUT  SMARTMLINE  AUTOLAYOUT  CFBLOCKS  CFDIAG  CFBUILD")
       (foreach f (reverse failed) (princ (strcat "\n  FAILED: " f)))
     )
   )

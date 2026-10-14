@@ -6,5 +6,5 @@
 *.bak
 *.sv$
 
-# Local screenshots
-WiringBugInputs.png
+# CFDIAG reports (written next to the drawing)
+ControlFreak_Diagnostics.txt

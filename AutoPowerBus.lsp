@@ -2,14 +2,14 @@
 ; AUTO POWER BUS - Automatic Power Bus Wiring from Smart Blocks
 ; Reads block attributes (PWR_POS, PWR_NEG) to automatically wire power buses
 ; Uses SmartJumper_Lib for drawing and automatic bridge detection
+;
+; Command: AUTOPOWERBUS (select blocks)
+; Core:    (cf:wire-power ss) - no prompts, used by CFBUILD
 ; ============================================================================
 
 (vl-load-com)
 
-(defun c:autopowerbus ( / *error* ss blockList posTermList negTermList skippedCount
-                         maxY yPosBus yNegBus posDots negDots
-                         ArcOffset NegBusOffset BrRad DotRad ColPos ColNeg
-                         routes posRoutes negRoutes box)
+(defun c:autopowerbus ( / *error* ss)
 
   ; --- CHECK DEPENDENCY ---
   (if (not smart-wire)
@@ -19,14 +19,6 @@
     )
   )
 
-  ; --- CONFIGURATION CONSTANTS ---
-  (setq ArcOffset 20.0)        ; Height of bus above highest click
-  (setq NegBusOffset 5.0)      ; Height of Negative bus above Positive
-  (setq BrRad 2.0)             ; Jumper Bridge Radius
-  (setq DotRad 1.0)            ; Junction Dot Radius
-  (setq ColPos 1)              ; Red
-  (setq ColNeg 5)              ; Blue
-
   ; --- ERROR HANDLER ---
   (defun *error* (msg)
     (if (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*"))
@@ -35,7 +27,6 @@
     (princ)
   )
 
-  ; 1. COLLECT BLOCKS WITH ATTRIBUTES
   (princ "\n--- AUTO POWER BUS WIRING ---")
   (princ "\nSelect blocks to wire together...")
   (setq ss (ssget '((0 . "INSERT"))))
@@ -44,74 +35,91 @@
     (progn (princ "\nNo blocks selected.") (exit))
   )
 
+  (if (cf:wire-power ss)
+    (princ "\nAuto Power Bus Complete.")
+  )
+  (princ)
+)
+
+; ============================================================================
+; CORE: Wire the power bus between the blocks in selection set ss
+; Returns the Y of the top (negative) bus, or nil if fewer than 2 blocks
+; have PWR_POS/PWR_NEG
+; ============================================================================
+(defun cf:wire-power (ss / blockList posTermList skippedCount maxY yPosBus yNegBus
+                           posDots negDots routes posRoutes negRoutes box
+                           ArcOffset NegBusOffset BrRad DotRad ColPos ColNeg)
+
+  ; --- CONFIGURATION CONSTANTS ---
+  (setq ArcOffset 20.0)        ; Height of bus above highest terminal
+  (setq NegBusOffset 5.0)      ; Height of Negative bus above Positive
+  (setq BrRad 2.0)             ; Jumper Bridge Radius
+  (setq DotRad 1.0)            ; Junction Dot Radius
+  (setq ColPos 1)              ; Red
+  (setq ColNeg 5)              ; Blue
+
+  ; 1. COLLECT BLOCKS WITH ATTRIBUTES
   (setq blockList (collect-power-blocks ss))
   (setq skippedCount (- (sslength ss) (length blockList)))
 
-  ; Display results
   (if (> skippedCount 0)
-    (princ (strcat "\nWarning: " (itoa skippedCount) " block(s) skipped (missing PWR_POS/PWR_NEG attributes)"))
+    (princ (strcat "\nPower: " (itoa skippedCount) " block(s) skipped (no PWR_POS/PWR_NEG attributes)"))
   )
-  (princ (strcat "\nFound " (itoa (length blockList)) " valid block(s)"))
+  (princ (strcat "\nPower: " (itoa (length blockList)) " block(s) to wire"))
 
-  ; Check if we have enough blocks
   (if (< (length blockList) 2)
-    (progn (princ "\nNeed at least 2 blocks with PWR_POS/PWR_NEG attributes.") (exit))
-  )
+    (progn
+      (princ "\nPower: need at least 2 blocks with PWR_POS/PWR_NEG attributes.")
+      nil
+    )
+    (progn
+      ; 2. SORT BLOCKS LEFT-TO-RIGHT
+      (setq blockList (sort-blocks-left-to-right blockList))
 
-  ; 2. SORT BLOCKS LEFT-TO-RIGHT
-  (setq blockList (sort-blocks-left-to-right blockList))
+      ; 3. CALCULATE MAX HEIGHT
+      (setq posTermList (mapcar 'caddr blockList))
+      (setq maxY (apply 'max (mapcar 'cadr posTermList)))
 
-  ; 3. EXTRACT TERMINAL LISTS AND CALCULATE MAX HEIGHT
-  (setq posTermList (mapcar 'caddr blockList))
-  (setq negTermList (mapcar 'cadddr blockList))
-  (setq maxY (apply 'max (mapcar 'cadr posTermList)))
-
-  ; A block with its power terminals on the bottom must still sit below the bus
-  (foreach blkItem blockList
-    (if (setq box (cf:bbox (car blkItem)))
-      (if (< (cadr (caddr blkItem)) (/ (+ (cadar box) (cadadr box)) 2.0))
-        (setq maxY (max maxY (cadadr box)))
+      ; A block with its power terminals on the bottom must still sit below the bus
+      (foreach blkItem blockList
+        (if (setq box (cf:bbox (car blkItem)))
+          (if (< (cadr (caddr blkItem)) (/ (+ (cadar box) (cadadr box)) 2.0))
+            (setq maxY (max maxY (cadadr box)))
+          )
+        )
       )
+
+      ; 4. CALCULATE BUS HEIGHTS
+      (setq yPosBus (+ maxY ArcOffset))
+      (setq yNegBus (+ yPosBus NegBusOffset))
+
+      ; 5. ROUTE EACH DEVICE (terminals on the bottom of a block go round it)
+      (foreach blkItem blockList
+        (setq routes (cf:device-routes (car blkItem)
+                                       (list (caddr blkItem) (cadddr blkItem))
+                                       (list yPosBus yNegBus)))
+        (setq posRoutes (append posRoutes (list (car routes))))
+        (setq negRoutes (append negRoutes (list (cadr routes))))
+      )
+
+      ; PHASE 1: POSITIVE BUS (RED)
+      ; Bus spans leftmost to rightmost terminal, whatever the block order
+      (princ "\nDrawing Positive Bus...")
+      (setq posDots (cf:draw-bus posRoutes yPosBus ColPos nil BrRad))
+
+      ; PHASE 2: NEGATIVE BUS (BLUE)
+      ; Every riser uses smart-wire, so any riser crossing the positive
+      ; bus gets a bridge - including the first device's
+      (princ "\nDrawing Negative Bus...")
+      (setq negDots (cf:draw-bus negRoutes yNegBus ColNeg T BrRad))
+
+      ; PHASE 3: JUNCTION DOTS
+      (foreach pt posDots (draw-junction-dot pt DotRad ColPos))
+      (foreach pt negDots (draw-junction-dot pt DotRad ColNeg))
+
+      yNegBus
     )
   )
-
-  ; 4. CALCULATE BUS HEIGHTS
-  (setq yPosBus (+ maxY ArcOffset))
-  (setq yNegBus (+ yPosBus NegBusOffset))
-
-  ; 5. ROUTE EACH DEVICE (terminals on the bottom of a block go round it)
-  (foreach blkItem blockList
-    (setq routes (cf:device-routes (car blkItem)
-                                   (list (caddr blkItem) (cadddr blkItem))
-                                   (list yPosBus yNegBus)))
-    (setq posRoutes (append posRoutes (list (car routes))))
-    (setq negRoutes (append negRoutes (list (cadr routes))))
-  )
-
-  ; -----------------------------------------------------------
-  ; PHASE 1: POSITIVE BUS (RED)
-  ; Bus spans leftmost to rightmost terminal, whatever the block order
-  ; -----------------------------------------------------------
-  (princ "\nDrawing Positive Bus...")
-  (setq posDots (cf:draw-bus posRoutes yPosBus ColPos nil BrRad))
-
-  ; -----------------------------------------------------------
-  ; PHASE 2: NEGATIVE BUS (BLUE)
-  ; Every riser uses smart-wire, so any riser crossing the positive
-  ; bus gets a bridge - including the first device's
-  ; -----------------------------------------------------------
-  (princ "\nDrawing Negative Bus...")
-  (setq negDots (cf:draw-bus negRoutes yNegBus ColNeg T BrRad))
-
-  ; -----------------------------------------------------------
-  ; PHASE 3: JUNCTION DOTS
-  ; -----------------------------------------------------------
-  (princ "\nAdding Junction Dots...")
-  (foreach pt posDots (draw-junction-dot pt DotRad ColPos))
-  (foreach pt negDots (draw-junction-dot pt DotRad ColNeg))
-
-  (princ "\nAuto Power Bus Complete.")
-  (princ)
 )
 
 ; ============================================================================

@@ -1,5 +1,5 @@
 ; ============================================================================
-; SMART JUMPER LIBRARY (Engine V1.4)
+; SMART JUMPER LIBRARY (Engine V1.5)
 ; - Crossing detection no longer depends on what is visible on screen
 ; - Ignores contacts at a wire's own start/end point
 ; - Draws with entmake in WCS (independent of the current UCS)
@@ -9,7 +9,9 @@
 
 (vl-load-com)
 
+(setq cf:*lib-version* "1.5")
 (setq cf:*terminal-gap* 5.0) ; Risers start this far above a terminal point
+(setq cf:*ignore-layers* "CF-DINRAIL") ; Wires never bridge over objects on these layers (wildcards ok)
 
 ; --- PUBLIC FUNCTIONS -------------------------------------------------------
 
@@ -90,6 +92,27 @@
       (setq mn (vlax-safearray->list mn))
       (setq mx (vlax-safearray->list mx))
       (list (list (car mn) (cadr mn)) (list (car mx) (cadr mx)))
+    )
+  )
+)
+
+; Extents of a block definition relative to its base point, measured with a
+; temporary insert at 0,0: ((minX minY) (maxX maxY)), or nil
+(defun cf:block-extents (blockName / obj res mn mx)
+  (setq obj (vl-catch-all-apply 'vla-insertblock
+              (list (vla-get-modelspace (vla-get-activedocument (vlax-get-acad-object)))
+                    (vlax-3d-point '(0.0 0.0 0.0)) blockName 1.0 1.0 1.0 0.0)))
+  (if (not (vl-catch-all-error-p obj))
+    (progn
+      (setq res (vl-catch-all-apply 'vla-getboundingbox (list obj 'mn 'mx)))
+      (vla-delete obj)
+      (if (not (vl-catch-all-error-p res))
+        (progn
+          (setq mn (vlax-safearray->list mn))
+          (setq mx (vlax-safearray->list mx))
+          (list (list (car mn) (cadr mn)) (list (car mx) (cadr mx)))
+        )
+      )
     )
   )
 )
@@ -259,6 +282,7 @@
   ; Every candidate in the current space (Ignore Text/Hatch), visible or not
   (setq ss (ssget "X"
              (list '(-4 . "<NOT") '(0 . "TEXT,MTEXT,DIMENSION,HATCH") '(-4 . "NOT>")
+                   '(-4 . "<NOT") (cons 8 cf:*ignore-layers*) '(-4 . "NOT>")
                    (cons 410 (cf:current-space-name)))))
   (if ss
     (repeat (setq i (sslength ss))
@@ -362,5 +386,5 @@
   )
 )
 
-(princ "\nSmartJumper Library V1.4 Loaded.")
+(princ "\nSmartJumper Library V1.5 Loaded.")
 (princ)
